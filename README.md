@@ -1,6 +1,6 @@
 # GraphQL Universal Analyzer Extension
 
-**Version:** 1.0.5  
+**Version:** 1.0.6  
 **Author:** CAST  
 **Namespace:** uc
 
@@ -8,18 +8,19 @@
 
 ## Overview
 
-This CAST Universal Analyzer extension provides automated analysis of **GraphQL** source code. It identifies code structures (classes, functions, methods, etc.) and creates call relationships to enable software architecture analysis in CAST Imaging.
+This CAST Universal Analyzer extension provides automated analysis of **GraphQL** applications including schema files and client-side code. It identifies GraphQL structures and creates call relationships to enable full-stack software architecture analysis in CAST Imaging.
 
 ### What This Extension Does
 
-- ✅ **Object Detection**: Extracts code structures from GraphQL files
-- ✅ **Call Analysis**: Identifies function/method calls and creates links
-- ✅ **Strict Resolution**: Uses smart heuristics to avoid false positives
-- ✅ **Unresolved Calls Report**: Provides transparency on what couldn't be resolved
+- ✅ **Schema Object Detection**: Extracts GraphQL types, queries, mutations from schema files
+- ✅ **Client-Side Linking**: Links React/Apollo Client code to GraphQL schema objects
+- ✅ **Full-Stack Transactions**: Enables end-to-end transaction analysis from UI to GraphQL operations
+- ✅ **Smart Resolution**: Uses intelligent heuristics to match client operations to schema definitions
 
 ### Supported File Extensions
 
-`*.graphql`, `*.gql`, `*.graphqls`
+**Schema Files:** `*.graphql`, `*.gql`, `*.graphqls`  
+**Client Files:** `*.js`, `*.jsx`, `*.ts`, `*.tsx` (via HTML5/JavaScript analyzer integration)
 
 ---
 
@@ -45,9 +46,88 @@ This extension detects and analyzes the following GraphQL constructs:
 - **Fragment**: Fragment within Schema
 - **Variable**: Variable within Query
 
+### Client-Side Objects (NEW in v1.0.6)
+
+The extension also creates custom objects for GraphQL operations in React/JavaScript code:
+
+- **CAST_GraphQL_ClientQuery**: Represents a `useQuery()` hook call
+- **CAST_GraphQL_ClientMutation**: Represents a `useMutation()` hook call
+
+These objects are created as children of JavaScript functions and linked to the corresponding GraphQL schema objects.
+
+**Example hierarchy in Imaging:**
+```
+App.jsx
+└── Function: App
+    ├── CAST_GraphQL_ClientQuery "query:users"
+    │   └── USE link → GraphQLQuery "users" (from schema.graphqls)
+    └── CAST_GraphQL_ClientMutation "mutation:createUser"
+        └── USE link → GraphQLMutation "createUser" (from schema.graphqls)
+```
+
 ---
 
-## Call Link Detection
+## Client-Side GraphQL Detection
+
+### Supported Patterns
+
+The extension detects Apollo Client GraphQL operations in React code:
+
+| Pattern | Example | Detection |
+|---------|---------|-----------|
+| **useQuery hook** | `const { data } = useQuery(GET_USERS)` | ✅ Detected |
+| **useMutation hook** | `const [createUser] = useMutation(CREATE_USER)` | ✅ Detected |
+| **gql template literals** | ``const GET_USERS = gql`query GetUsers { users { id } }` `` | ✅ Parsed |
+| **Named operations** | `query GetUsers { ... }` | ✅ Operation name extracted |
+| **Anonymous queries** | `query { users { ... } }` | ✅ Field name extracted |
+
+### How It Works
+
+1. **Event-Driven Architecture**: Listens to HTML5/JavaScript analyzer events
+2. **Two-Pass Analysis**:
+   - Pass 1: Collect all `gql` template literal definitions
+   - Pass 2: Find `useQuery`/`useMutation` calls and resolve variables
+3. **Variable Resolution**: Traces query variable to its `gql` definition
+4. **GraphQL Parsing**: Extracts operation type (query/mutation), name, and field
+5. **Object Creation**: Creates custom client objects as children of JS functions
+6. **Linking**: Creates USE links to existing GraphQL schema objects
+
+### Example
+
+Given this React code:
+
+```javascript
+import { gql, useQuery, useMutation } from "@apollo/client";
+
+const GET_USERS = gql`
+  query GetUsers {
+    users { id name email }
+  }
+`;
+
+const CREATE_USER = gql`
+  mutation CreateUser($input: CreateUserInput!) {
+    createUser(input: $input) { id name }
+  }
+`;
+
+function App() {
+  const { data } = useQuery(GET_USERS);
+  const [createUser] = useMutation(CREATE_USER);
+  // ...
+}
+```
+
+The extension creates:
+- `CAST_GraphQL_ClientQuery` object named "query:users" inside function `App`
+- `CAST_GraphQL_ClientMutation` object named "mutation:createUser" inside function `App`
+- USE links from these objects to the corresponding `GraphQLQuery` and `GraphQLMutation` objects in your schema
+
+This enables **end-to-end transaction analysis** from React UI → GraphQL operations → Backend resolvers.
+
+---
+
+## Original Schema Link Detection (Legacy)
 
 ### What CAN Be Detected ✅
 

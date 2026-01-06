@@ -114,7 +114,7 @@
 		<description>GraphQL Argument</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL Artifacts"/>
-		<tree parent="GraphQLField" category="EnlightenTree"/>
+		<tree parent="GraphQLType" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLQuery" rid="16">
 		<description>GraphQL Query</description>
@@ -152,10 +152,27 @@
 		<description>GraphQL Variable</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL Artifacts"/>
-		<tree parent="GraphQLQuery" category="EnlightenTree"/>
+		<tree parent="GraphQLSchema" category="EnlightenTree"/>
+	</type>
+	<!-- GraphQL Client Operations -->
+	<type name="GraphQLClientQuery" rid="21">
+		<description>GraphQL Client Query</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL Module"/>
+		<tree parent="GraphQLProgram" category="EnlightenTree"/>
+	</type>
+	<type name="GraphQLClientMutation" rid="22">
+		<description>GraphQL Client Mutation</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL Module"/>
+		<tree parent="GraphQLProgram" category="EnlightenTree"/>
 	</type>
 	<!-- GraphQL project -->
-	<type name="GraphQLProject" rid="21">
+	<type name="GraphQLProject" rid="23">
 		<description>GraphQL Project</description>
 		<inheritedCategory name="UAProject"/>
 		<inheritedCategory name="GraphQL"/>

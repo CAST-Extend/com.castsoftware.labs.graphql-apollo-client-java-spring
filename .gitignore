@@ -11,7 +11,5 @@ __pycache__/
 *.swp
 *.swo
 *~
-com.castsoftware.nodejs.2.12.1-funcrel/
-com.castsoftware.uc.cgi.prospect.angular-master/
+ressources/
 .github/
-Javascript analyzer-060126-163221.pdf

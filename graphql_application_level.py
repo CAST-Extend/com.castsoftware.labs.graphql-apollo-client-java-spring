@@ -47,36 +47,98 @@ class GraphQLApplicationExtension(ApplicationLevelExtension):
         Called once after all analyzer-level extensions have completed.
         
         This is the entry point for application-level processing.
-        Use this method to:
-        - Create cross-technology links
-        - Perform post-analysis calculations
-        - Generate custom reports
-        - Implement quality rules
+        Creates cross-technology links between GraphQL client operations
+        and GraphQL schema objects.
         
         Args:
-            application: CAST Application object providing access to:
-                - get_files(): All analyzed files
-                - search_objects(category=None, name=None): Find objects
-                - objects(): Iterate over all objects
-        
-        Example: Creating cross-technology links
-        
-            # Find all GraphQL programs
-            programs = application.search_objects(category='GraphQLProgram')
-            
-            # Find database tables
-            tables = application.search_objects(category='Table')
-            
-            # Create links based on naming conventions or patterns
-            for program in programs:
-                for table in tables:
-                    if table.get_name() in program.get_name():
-                        # create_link(...)
-                        pass
+            application: CAST Application object
         """
-        # TODO: Implement cross-technology analysis here
-        # This is intentionally minimal - extend as needed
-        pass
+        try:
+            from cast.analysers import log
+            from cast.application import create_link
+            
+            log.info('[GraphQL Application] Starting cross-technology link creation')
+            
+            # Create links between client operations and schema objects
+            self._link_client_to_schema(application)
+            
+            log.info('[GraphQL Application] Cross-technology link creation complete')
+            
+        except Exception as e:
+            from cast.analysers import log
+            log.warning('[GraphQL Application] Error in end_application: ' + str(e))
+            log.debug('[GraphQL Application] ' + traceback.format_exc())
+    
+    def _link_client_to_schema(self, application):
+        """
+        Create USE links between GraphQL client operations and schema objects.
+        
+        Finds all GraphQLClientQuery and GraphQLClientMutation objects,
+        then links them to corresponding GraphQLQuery and GraphQLMutation
+        objects from the schema.
+        
+        Args:
+            application: CAST Application object
+        """
+        from cast.analysers import log
+        from cast.application import create_link
+        
+        # Find all client operations
+        client_queries = list(application.objects().has_type('GraphQLClientQuery'))
+        client_mutations = list(application.objects().has_type('GraphQLClientMutation'))
+        
+        total_clients = len(client_queries) + len(client_mutations)
+        if total_clients == 0:
+            log.debug('[GraphQL Application] No client operations found')
+            return
+        
+        log.info('[GraphQL Application] Found ' + str(total_clients) + ' client operations to link')
+        
+        # Build index of schema objects for faster lookup
+        schema_queries = {}
+        schema_mutations = {}
+        
+        for obj in application.objects().has_type('GraphQLQuery'):
+            field_name = obj.get_name()
+            schema_queries[field_name] = obj
+        
+        for obj in application.objects().has_type('GraphQLMutation'):
+            field_name = obj.get_name()
+            schema_mutations[field_name] = obj
+        
+        log.info('[GraphQL Application] Schema index: ' + str(len(schema_queries)) + 
+                ' queries, ' + str(len(schema_mutations)) + ' mutations')
+        
+        # Link client queries to schema queries
+        links_created = 0
+        for client_obj in client_queries:
+            try:
+                field_name = client_obj.get_property('GraphQL.fieldName')
+                if field_name and field_name in schema_queries:
+                    schema_obj = schema_queries[field_name]
+                    create_link('useLink', client_obj, schema_obj)
+                    links_created += 1
+                    log.debug('[GraphQL Application] Linked client query to schema: ' + field_name)
+                else:
+                    log.debug('[GraphQL Application] No schema query found for: ' + str(field_name))
+            except Exception as e:
+                log.warning('[GraphQL Application] Error linking query: ' + str(e))
+        
+        # Link client mutations to schema mutations
+        for client_obj in client_mutations:
+            try:
+                field_name = client_obj.get_property('GraphQL.fieldName')
+                if field_name and field_name in schema_mutations:
+                    schema_obj = schema_mutations[field_name]
+                    create_link('useLink', client_obj, schema_obj)
+                    links_created += 1
+                    log.debug('[GraphQL Application] Linked client mutation to schema: ' + field_name)
+                else:
+                    log.debug('[GraphQL Application] No schema mutation found for: ' + str(field_name))
+            except Exception as e:
+                log.warning('[GraphQL Application] Error linking mutation: ' + str(e))
+        
+        log.info('[GraphQL Application] Created ' + str(links_created) + ' USE links')
     
     # =========================================================================
     # HELPER METHODS - Extend as needed

@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
   <metadata>
     <id>com.castsoftware.uc.graphql</id>
-    <version>1.0.5</version>
+    <version>1.1.0</version>
     <title>GraphQL</title>
     <authors>CAST</authors>
     <owners>CAST</owners>
@@ -10,14 +10,14 @@
     <projectUrl>https://example.com/project</projectUrl>
     <iconUrl>https://example.com/icon.png</iconUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
-    <description>This extension parses GRAPHQL, GQL, GRAPHQLS files and creates calls between them</description>
-    <releaseNotes></releaseNotes>
-    <tags>GraphQL API Schema Query Mutation Subscription</tags>
+    <description>This extension parses GraphQL schema files and links React/Apollo Client code to GraphQL operations for full-stack transaction analysis</description>
+    <releaseNotes>v1.1.0: Added client-side GraphQL operation detection and linking for React/Apollo Client applications</releaseNotes>
+    <tags>GraphQL API Schema Query Mutation Subscription React Apollo Client useQuery useMutation</tags>
     <dependencies>
       <dependency id="CAIP" version="8.3.3" />
     </dependencies>
   </metadata>
   <files>
-    <file src="**\*" exclude="tests\**;**\__pycache__\**" target="." />
+    <file src="**\*" exclude="tests\**;ressources\**;**\__pycache__\**;.github\**;.idea\**;.vscode\**;.git\**;**\*.md" target="." />
   </files>
 </package>
