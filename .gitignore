@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.nupkg
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+com.castsoftware.nodejs.2.12.1-funcrel/
+com.castsoftware.uc.cgi.prospect.angular-master/
+.github/
+Javascript analyzer-060126-163221.pdf

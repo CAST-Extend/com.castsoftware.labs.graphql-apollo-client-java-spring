@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>com.castsoftware.uc.graphql</id>
+    <version>1.0.5</version>
+    <title>GraphQL</title>
+    <authors>CAST</authors>
+    <owners>CAST</owners>
+    <licenseUrl>http://www.castsoftware.com/ps/doc/extension/license</licenseUrl>
+    <projectUrl>https://example.com/project</projectUrl>
+    <iconUrl>https://example.com/icon.png</iconUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>This extension parses GRAPHQL, GQL, GRAPHQLS files and creates calls between them</description>
+    <releaseNotes></releaseNotes>
+    <tags>GraphQL API Schema Query Mutation Subscription</tags>
+    <dependencies>
+      <dependency id="CAIP" version="8.3.3" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="**\*" exclude="tests\**;**\__pycache__\**" target="." />
+  </files>
+</package>

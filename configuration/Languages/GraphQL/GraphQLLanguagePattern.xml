@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<languagePattern id="GraphQL">
+	<comment>
+		<begin><![CDATA[#]]></begin>
+		<end><![CDATA[[\r\n]]]></end>
+		<multiline>false</multiline>
+	</comment>
+	<comment>
+		<begin><![CDATA["""]]></begin>
+		<end><![CDATA["""]]></end>
+		<multiline>true</multiline>
+	</comment>
+</languagePattern>

@@ -1,0 +1,8 @@
+<setup version="1.0.0.0" encoding="UTF-8">
+<associations package="Base_GraphQL" version="1.0.0" encoding="UTF-8" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="CAST-Sets.xsd">
+</associations>
+<prefixes version="1.0.0.0" encoding="UTF-8">
+</prefixes>
+<ignoredtables version="1.0.0.0" encoding="UTF-8">
+</ignoredtables>
+</setup>
