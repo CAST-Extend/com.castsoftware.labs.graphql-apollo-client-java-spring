@@ -60,6 +60,12 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
             # Create links between client operations and schema objects
             self._link_client_to_schema(application)
             
+            # Create links between backend methods and schema objects
+            self._link_backend_to_schema(application)
+            
+            # Create direct call links between frontend and backend
+            self._link_frontend_to_backend(application)
+            
             info('[GraphQL Application] Cross-technology link creation complete')
             
         except Exception as e:
@@ -238,3 +244,139 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         info('[GraphQL Application]   - Mutations: ' + str(mutations_matched) + ' linked, ' + str(mutations_not_matched) + ' unmatched')
         info('[GraphQL Application] ========================================')
 
+    def _link_backend_to_schema(self, application):
+        """
+        Create USE links between Java backend methods and GraphQL schema fields.
+        
+        NAIVE IMPLEMENTATION:
+        Uses simple name-based matching between Java method names and GraphQL field names.
+        This may create false positives (linking unrelated methods with same names).
+        
+        Future enhancement: Should verify @Controller and @QueryMapping/@MutationMapping
+        annotations, but Java analyzer currently doesn't broadcast annotation data.
+        See README "Backend-to-Schema Linking (Future Enhancement)" for details.
+        
+        Matching logic:
+        - Java method "user" → GraphQL field "Query.user"
+        - Java method "createUser" → GraphQL field "Mutation.createUser"
+        
+        Args:
+            application: CAST Application object
+        """
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] Starting backend-to-schema link creation (NAIVE)')
+        info('[GraphQL Application] ========================================')
+        
+        # Find all Java methods
+        debug('[GraphQL Application] Searching for Java methods...')
+        java_methods = [obj for obj in application.get_objects() if obj.get_type() == 'JV_METHOD']
+        
+        info('[GraphQL Application] Found ' + str(len(java_methods)) + ' JV_METHOD objects')
+        if len(java_methods) > 20:
+            debug('[GraphQL Application]   (Too many to list individually)')
+        else:
+            for obj in java_methods:
+                debug('[GraphQL Application]   - Java Method: "' + obj.get_name() + '" (fullname: ' + str(obj.get_fullname()) + ')')
+        
+        if len(java_methods) == 0:
+            warning('[GraphQL Application] No Java methods found - nothing to link')
+            return
+        
+        # Build index of schema fields for faster lookup
+        info('[GraphQL Application] Building schema field index...')
+        schema_queries = {}
+        schema_mutations = {}
+        
+        # Find Query and Mutation types, then load their field children
+        graphql_types = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLType']
+        debug('[GraphQL Application] Found ' + str(len(graphql_types)) + ' GraphQLType objects')
+        
+        for type_obj in graphql_types:
+            type_name = type_obj.get_name()
+            debug('[GraphQL Application]   - Processing GraphQLType: "' + type_name + '"')
+            
+            if type_name == 'Query':
+                info('[GraphQL Application] Found Query type: ' + str(type_obj.get_fullname()))
+                type_obj.load_children()
+                children = type_obj.get_children()
+                debug('[GraphQL Application]   - Query type has ' + str(len(children)) + ' children')
+                
+                for field_obj in children:
+                    if field_obj.get_type() == 'GraphQLField':
+                        field_name = field_obj.get_name()
+                        schema_queries[field_name] = field_obj
+                        info('[GraphQL Application]   - Indexed query field: "' + field_name + '" (fullname: ' + str(field_obj.get_fullname()) + ')')
+                    else:
+                        debug('[GraphQL Application]   - Skipping non-field child: ' + field_obj.get_type())
+                    
+            elif type_name == 'Mutation':
+                info('[GraphQL Application] Found Mutation type: ' + str(type_obj.get_fullname()))
+                type_obj.load_children()
+                children = type_obj.get_children()
+                debug('[GraphQL Application]   - Mutation type has ' + str(len(children)) + ' children')
+                
+                for field_obj in children:
+                    if field_obj.get_type() == 'GraphQLField':
+                        field_name = field_obj.get_name()
+                        schema_mutations[field_name] = field_obj
+                        info('[GraphQL Application]   - Indexed mutation field: "' + field_name + '" (fullname: ' + str(field_obj.get_fullname()) + ')')
+                    else:
+                        debug('[GraphQL Application]   - Skipping non-field child: ' + field_obj.get_type())
+        
+        info('[GraphQL Application] Schema index complete: ' + str(len(schema_queries)) + 
+                ' query fields, ' + str(len(schema_mutations)) + ' mutation fields')
+        
+        if len(schema_queries) == 0 and len(schema_mutations) == 0:
+            warning('[GraphQL Application] No GraphQL schema fields found - nothing to link to')
+            return
+        
+        info('[GraphQL Application] ----------------------------------------')
+        info('[GraphQL Application] Matching Java methods to schema fields (by name)...')
+        info('[GraphQL Application] ----------------------------------------')
+        
+        # Match Java methods to schema fields by name
+        links_created = 0
+        queries_matched = 0
+        mutations_matched = 0
+        not_matched = 0
+        
+        for java_method in java_methods:
+            try:
+                method_name = java_method.get_name()
+                debug('[GraphQL Application] Processing Java method: "' + method_name + '"')
+                
+                # Try to match with Query fields first
+                if method_name in schema_queries:
+                    schema_obj = schema_queries[method_name]
+                    info('[GraphQL Application] >>> CREATING LINK: useLink')
+                    info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
+                    info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                    create_link('useLink', java_method, schema_obj)
+                    links_created += 1
+                    queries_matched += 1
+                
+                # Try to match with Mutation fields
+                elif method_name in schema_mutations:
+                    schema_obj = schema_mutations[method_name]
+                    info('[GraphQL Application] >>> CREATING LINK: useLink')
+                    info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
+                    info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                    create_link('useLink', java_method, schema_obj)
+                    links_created += 1
+                    mutations_matched += 1
+                
+                else:
+                    # No match found - this is expected for most Java methods
+                    debug('[GraphQL Application] No match for Java method: "' + method_name + '"')
+                    not_matched += 1
+                    
+            except Exception as e:
+                warning('[GraphQL Application] !!! ERROR linking Java method "' + java_method.get_name() + '": ' + str(e))
+                debug('[GraphQL Application] ' + traceback.format_exc())
+        
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' USE links')
+        info('[GraphQL Application]   - Query methods:    ' + str(queries_matched) + ' linked')
+        info('[GraphQL Application]   - Mutation methods: ' + str(mutations_matched) + ' linked')
+        info('[GraphQL Application]   - Not matched:      ' + str(not_matched) + ' (expected - most Java methods are not GraphQL resolvers)')
+        info('[GraphQL Application] ========================================')
