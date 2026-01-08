@@ -155,13 +155,14 @@
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<!-- GraphQL Client Operations -->
+	<!-- Note: These objects have JavaScript/React parents, not GraphQL parents -->
+	<!-- So we don't declare a tree parent to avoid Enlighten tree errors -->
 	<type name="GraphQLClientQuery" rid="21">
 		<description>GraphQL Client Query</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL Module"/>
-		<tree parent="GraphQLProgram" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLClientMutation" rid="22">
 		<description>GraphQL Client Mutation</description>
@@ -169,7 +170,6 @@
 		<inheritedCategory name="GraphQL Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL Module"/>
-		<tree parent="GraphQLProgram" category="EnlightenTree"/>
 	</type>
 	<!-- GraphQL project -->
 	<type name="GraphQLProject" rid="23">

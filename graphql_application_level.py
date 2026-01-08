@@ -95,25 +95,53 @@ class GraphQLApplicationExtension(ApplicationLevelExtension):
         log.info('[GraphQL Application] Found ' + str(total_clients) + ' client operations to link')
         
         # Build index of schema objects for faster lookup
+        # In GraphQL schema, Query and Mutation are GraphQLType objects
+        # Their fields (user, users, createUser) are GraphQLField objects that are children
         schema_queries = {}
         schema_mutations = {}
         
-        for obj in application.objects().has_type('GraphQLQuery'):
-            field_name = obj.get_name()
-            schema_queries[field_name] = obj
+        # Find the Query and Mutation type objects
+        query_type = None
+        mutation_type = None
         
-        for obj in application.objects().has_type('GraphQLMutation'):
+        for obj in application.objects().has_type('GraphQLType'):
+            obj_name = obj.get_name()
+            if obj_name == 'Query':
+                query_type = obj
+                log.debug('[GraphQL Application] Found Query type: ' + str(obj.get_fullname()))
+            elif obj_name == 'Mutation':
+                mutation_type = obj
+                log.debug('[GraphQL Application] Found Mutation type: ' + str(obj.get_fullname()))
+        
+        # Now find all GraphQLField objects and check their parent
+        for obj in application.objects().has_type('GraphQLField'):
             field_name = obj.get_name()
-            schema_mutations[field_name] = obj
+            parent = obj.get_parent()
+            
+            if parent:
+                # Check if this field belongs to Query or Mutation type
+                if query_type and parent.get_guid() == query_type.get_guid():
+                    schema_queries[field_name] = obj
+                    log.debug('[GraphQL Application] Indexed query field: ' + field_name)
+                elif mutation_type and parent.get_guid() == mutation_type.get_guid():
+                    schema_mutations[field_name] = obj
+                    log.debug('[GraphQL Application] Indexed mutation field: ' + field_name)
         
         log.info('[GraphQL Application] Schema index: ' + str(len(schema_queries)) + 
-                ' queries, ' + str(len(schema_mutations)) + ' mutations')
+                ' query fields, ' + str(len(schema_mutations)) + ' mutation fields')
         
         # Link client queries to schema queries
+        # Object names are in format "query:fieldName" - we parse to extract fieldName
         links_created = 0
         for client_obj in client_queries:
             try:
-                field_name = client_obj.get_property('GraphQL.fieldName')
+                obj_name = client_obj.get_name()
+                # Parse "query:fieldName" to get fieldName
+                if ':' in obj_name:
+                    field_name = obj_name.split(':')[1]
+                else:
+                    field_name = obj_name
+                
                 if field_name and field_name in schema_queries:
                     schema_obj = schema_queries[field_name]
                     create_link('useLink', client_obj, schema_obj)
@@ -125,9 +153,16 @@ class GraphQLApplicationExtension(ApplicationLevelExtension):
                 log.warning('[GraphQL Application] Error linking query: ' + str(e))
         
         # Link client mutations to schema mutations
+        # Object names are in format "mutation:fieldName" - we parse to extract fieldName
         for client_obj in client_mutations:
             try:
-                field_name = client_obj.get_property('GraphQL.fieldName')
+                obj_name = client_obj.get_name()
+                # Parse "mutation:fieldName" to get fieldName
+                if ':' in obj_name:
+                    field_name = obj_name.split(':')[1]
+                else:
+                    field_name = obj_name
+                
                 if field_name and field_name in schema_mutations:
                     schema_obj = schema_mutations[field_name]
                     create_link('useLink', client_obj, schema_obj)

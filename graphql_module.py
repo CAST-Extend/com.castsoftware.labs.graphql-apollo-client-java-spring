@@ -56,7 +56,6 @@ OBJECTS_CONFIG = {
         'Scalar': {'parent': 'Schema', 'pattern_keys': ['scalar_def', 'scalar_directive', 'scalar_def_description']},
         'Directive': {'parent': 'Schema', 'pattern_keys': ['directive_def', 'directive_def_with_args', 'directive_def_repeatable']},
         'Field': {'parent': 'Type', 'pattern_keys': ['field_def', 'field_def_with_args', 'field_def_non_null', 'field_def_list', 'field_def_list_non_null', 'field_def_deprecated', 'field_def_directive', 'field_def_description']},
-        'Argument': {'parent': 'Field', 'pattern_keys': ['argument_def', 'argument_def_default', 'argument_def_non_null', 'argument_def_list']},
         'Query': {'parent': 'Schema', 'pattern_keys': ['query_operation', 'query_operation_named', 'query_operation_with_vars', 'query_operation_anonymous']},
         'Mutation': {'parent': 'Schema', 'pattern_keys': ['mutation_operation', 'mutation_operation_named', 'mutation_operation_with_vars']},
         'Subscription': {'parent': 'Schema', 'pattern_keys': ['subscription_operation', 'subscription_operation_named', 'subscription_operation_with_vars']},
@@ -698,10 +697,6 @@ class GraphQLModule:
             'field_def_deprecated': ['^\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*[:(][^@]*@deprecated'],
             'field_def_directive': ['^\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*[:(][^@]*@[a-z]'],
             'field_def_description': ['^\\s*"""[^"]*"""\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*:', '^\\s*"[^"]*"\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*:'],
-            'argument_def': ['\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*:\\s*[A-Z\\[][A-Za-z0-9_\\[\\]!]*'],
-            'argument_def_default': ['\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*:\\s*[A-Z\\[][A-Za-z0-9_\\[\\]!]*\\s*='],
-            'argument_def_non_null': ['\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*:\\s*[A-Z\\[][A-Za-z0-9_\\[\\]]*!'],
-            'argument_def_list': ['\\s*(?P<n>[a-z][A-Za-z0-9_]*)\\s*:\\s*\\[[A-Z][A-Za-z0-9_!]*\\]'],
             'query_operation': ['^\\s*(?P<n>query)\\s*\\{'],
             'query_operation_named': ['^\\s*query\\s+(?P<n>[A-Z][A-Za-z0-9_]*)\\s*\\{', '^\\s*query\\s+(?P<n>[A-Z][A-Za-z0-9_]*)\\s*$'],
             'query_operation_with_vars': ['^\\s*query\\s+(?P<n>[A-Z][A-Za-z0-9_]*)\\s*\\([^)]*\\)\\s*\\{', '^\\s*query\\s*\\([^)]*\\)\\s*\\{'],
@@ -1237,15 +1232,39 @@ class GraphQLModule:
                     })
         """
         # =====================================================================
-        # SKELETON - IMPLEMENT YOUR TECHNOLOGY-SPECIFIC CALL DETECTION HERE
+        # GRAPHQL IMPLEMENTATION: Extract type references from fields
         # =====================================================================
-        #
-        # This method intentionally does nothing by default.
-        # You must implement call detection for your specific technology.
-        #
-        # See the docstring above for guidance on what to implement.
-        #
-        pass
+        # Parse the source to find type references in field arguments
+        # Example: createUser(input: CreateUserInput!): User!
+        # Creates link: createUser -> CreateUserInput (only input types, not return types)
+        
+        if not self.source_content:
+            return
+        
+        lines = self.source_content.splitlines()
+        for line_num, line in enumerate(lines, 1):
+            # Pattern for field with arguments
+            # fieldName(arg: ArgType, ...): ReturnType
+            field_match = re.match(r'^\s*([a-z][A-Za-z0-9_]*)\s*\(([^)]+)\)\s*:', line)
+            if field_match:
+                field_name = field_match.group(1)
+                args_str = field_match.group(2)
+                
+                # Find which object contains this line
+                caller = self._find_caller_for_line(line_num)
+                
+                # Extract argument types (ignore primitives and return types)
+                # Pattern: argName: ArgType or argName: ArgType!
+                for arg_match in re.finditer(r'([a-z][A-Za-z0-9_]*)\s*:\s*\[?([A-Z][A-Za-z0-9_]+)', args_str):
+                    arg_type = arg_match.group(2)
+                    # Skip GraphQL built-in scalar types
+                    if arg_type not in ['String', 'Int', 'Float', 'Boolean', 'ID']:
+                        self.pending_links.append({
+                            'caller': caller,
+                            'callee': arg_type,
+                            'type': 'useLink',
+                            'line': line_num
+                        })
     
     def _extract_calls(self):
         """
@@ -1366,30 +1385,35 @@ class GraphQLModule:
             library: The global library containing all symbols across all files
         """
         # =====================================================================
-        # SKELETON - IMPLEMENT YOUR TECHNOLOGY-SPECIFIC RESOLUTION HERE
+        # GRAPHQL IMPLEMENTATION: Resolve type references
         # =====================================================================
-        #
-        # Example implementation (pseudo-code):
-        #
-        # for link_info in self.pending_links:
-        #     callee_name = link_info['callee']
-        #     
-        #     # Strategy 1: Try same-file resolution first
-        #     for fullname, obj in self.objects.items():
-        #         if fullname.endswith('.' + callee_name):
-        #             link_info['resolved_callee'] = obj
-        #             link_info['resolved_callee_fullname'] = fullname
-        #             break
-        #     
-        #     # Strategy 2: Try cross-file if not found locally
-        #     if 'resolved_callee' not in link_info:
-        #         candidates = library.symbols_by_name.get(callee_name, [])
-        #         if len(candidates) == 1:  # Only if unambiguous
-        #             fullname = candidates[0]
-        #             link_info['resolved_callee'] = library.symbols[fullname]
-        #             link_info['resolved_callee_fullname'] = fullname
-        #
-        pass
+        # Resolve type names to GraphQL type objects (Type, Input, Enum, etc.)
+        
+        for link_info in self.pending_links:
+            callee_name = link_info['callee']
+            
+            # Strategy 1: Try same-file resolution first
+            for fullname, obj in self.objects.items():
+                # Check if object name matches (type names like User, CreateUserInput, etc.)
+                if fullname.endswith('.' + callee_name):
+                    link_info['resolved_callee'] = obj
+                    link_info['resolved_callee_fullname'] = fullname
+                    break
+            
+            # Strategy 2: Try cross-file resolution if not found locally
+            if 'resolved_callee' not in link_info:
+                candidates = library.symbols_by_name.get(callee_name, [])
+                if len(candidates) == 1:  # Only if unambiguous
+                    fullname = candidates[0]
+                    link_info['resolved_callee'] = library.symbols[fullname]
+                    link_info['resolved_callee_fullname'] = fullname
+                elif len(candidates) > 1:
+                    # Multiple candidates - try to find GraphQL types
+                    for candidate_fn in candidates:
+                        if any(x in candidate_fn for x in ['.graphql', '.gql', '.graphqls']):
+                            link_info['resolved_callee'] = library.symbols[candidate_fn]
+                            link_info['resolved_callee_fullname'] = candidate_fn
+                            break
     
     def save_links(self):
         """
@@ -1510,7 +1534,40 @@ class GraphQLModule:
         # 
         # return links_created
         #
-        return 0  # Skeleton returns 0 - implement your logic above
+        # =====================================================================
+        # GRAPHQL IMPLEMENTATION: Create useLink for type references
+        # =====================================================================
+        
+        links_created = 0
+        for link_info in self.pending_links:
+            if 'resolved_callee' not in link_info:
+                continue  # Skip unresolved links
+            
+            caller_fullname = link_info['caller']
+            callee_obj = link_info['resolved_callee']
+            link_type = link_info.get('type', 'useLink')
+            line = link_info.get('line', 0)
+            
+            caller_obj = self.objects.get(caller_fullname)
+            if not caller_obj:
+                continue
+            
+            # Create bookmark for navigation
+            bookmark = None
+            if line > 0 and self.file:
+                bookmark = Bookmark(self.file, line, 1, line, -1)
+            
+            # Create the link using CAST SDK
+            if bookmark:
+                create_link(link_type, caller_obj, callee_obj, bookmark)
+            else:
+                create_link(link_type, caller_obj, callee_obj)
+            
+            links_created += 1
+            log.debug('[GraphQL] Created ' + link_type + ' from ' + 
+                     caller_fullname + ' to ' + link_info.get('resolved_callee_fullname', 'unknown'))
+        
+        return links_created
     
     # =========================================================================
     # CLEANUP
