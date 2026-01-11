@@ -348,20 +348,20 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                 # Try to match with Query fields first
                 if method_name in schema_queries:
                     schema_obj = schema_queries[method_name]
-                    info('[GraphQL Application] >>> CREATING LINK: useLink')
+                    info('[GraphQL Application] >>> CREATING LINK: relyonLink')
                     info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
                     info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
-                    create_link('useLink', java_method, schema_obj)
+                    create_link('relyonLink', java_method, schema_obj)
                     links_created += 1
                     queries_matched += 1
                 
                 # Try to match with Mutation fields
                 elif method_name in schema_mutations:
                     schema_obj = schema_mutations[method_name]
-                    info('[GraphQL Application] >>> CREATING LINK: useLink')
+                    info('[GraphQL Application] >>> CREATING LINK: relyonLink')
                     info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
                     info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
-                    create_link('useLink', java_method, schema_obj)
+                    create_link('relyonLink', java_method, schema_obj)
                     links_created += 1
                     mutations_matched += 1
                 
@@ -375,8 +375,162 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                 debug('[GraphQL Application] ' + traceback.format_exc())
         
         info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' USE links')
+        info('[GraphQL Application] BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' RELY ON links')
         info('[GraphQL Application]   - Query methods:    ' + str(queries_matched) + ' linked')
         info('[GraphQL Application]   - Mutation methods: ' + str(mutations_matched) + ' linked')
         info('[GraphQL Application]   - Not matched:      ' + str(not_matched) + ' (expected - most Java methods are not GraphQL resolvers)')
+        info('[GraphQL Application] ========================================')
+
+    def _link_frontend_to_backend(self, application):
+        """
+        Create CALL links between GraphQL client operations and Java backend methods.
+        
+        NAIVE IMPLEMENTATION:
+        Uses simple name-based matching between GraphQL client operation names 
+        and Java method names. This may create false positives (linking unrelated 
+        operations with methods that happen to have the same name).
+        
+        Client operation names are in format "query:real_name" or "mutation:real_name".
+        We extract the real_name and match it directly with Java method names.
+        
+        Matching logic:
+        - GraphQLClientQuery "query:user" → Java method "user"
+        - GraphQLClientMutation "mutation:createUser" → Java method "createUser"
+        
+        Args:
+            application: CAST Application object
+        """
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] Starting frontend-to-backend link creation (NAIVE)')
+        info('[GraphQL Application] ========================================')
+        
+        # Find all client operations
+        debug('[GraphQL Application] Searching for client operations...')
+        client_queries = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientQuery']
+        client_mutations = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientMutation']
+        
+        info('[GraphQL Application] Found ' + str(len(client_queries)) + ' GraphQLClientQuery objects')
+        info('[GraphQL Application] Found ' + str(len(client_mutations)) + ' GraphQLClientMutation objects')
+        
+        total_clients = len(client_queries) + len(client_mutations)
+        if total_clients == 0:
+            warning('[GraphQL Application] No client operations found - nothing to link')
+            return
+        
+        # Find all Java methods
+        debug('[GraphQL Application] Searching for Java methods...')
+        java_methods = [obj for obj in application.get_objects() if obj.get_type() == 'JV_METHOD']
+        
+        info('[GraphQL Application] Found ' + str(len(java_methods)) + ' JV_METHOD objects')
+        
+        if len(java_methods) == 0:
+            warning('[GraphQL Application] No Java methods found - nothing to link to')
+            return
+        
+        # Build index of Java methods by name for faster lookup
+        info('[GraphQL Application] Building Java method index...')
+        java_methods_by_name = {}
+        for method in java_methods:
+            method_name = method.get_name()
+            # Handle potential name collisions by storing as list
+            if method_name not in java_methods_by_name:
+                java_methods_by_name[method_name] = []
+            java_methods_by_name[method_name].append(method)
+        
+        info('[GraphQL Application] Java method index complete: ' + str(len(java_methods_by_name)) + ' unique method names')
+        
+        info('[GraphQL Application] ----------------------------------------')
+        info('[GraphQL Application] Matching client operations to Java methods (by name)...')
+        info('[GraphQL Application] ----------------------------------------')
+        
+        # Match client operations to Java methods
+        links_created = 0
+        queries_matched = 0
+        mutations_matched = 0
+        not_matched = 0
+        multiple_matches = 0
+        
+        # Process queries
+        for client_obj in client_queries:
+            try:
+                obj_name = client_obj.get_name()
+                debug('[GraphQL Application] Processing client query: "' + obj_name + '"')
+                
+                # Parse "query:real_name" to get real_name
+                if ':' in obj_name:
+                    real_name = obj_name.split(':')[1]
+                    debug('[GraphQL Application]   - Extracted real name: "' + real_name + '"')
+                else:
+                    real_name = obj_name
+                    debug('[GraphQL Application]   - Using full name as real name: "' + real_name + '"')
+                
+                if real_name and real_name in java_methods_by_name:
+                    matched_methods = java_methods_by_name[real_name]
+                    
+                    if len(matched_methods) > 1:
+                        warning('[GraphQL Application] Multiple Java methods found with name "' + real_name + '": ' + str(len(matched_methods)) + ' matches (linking to all)')
+                        multiple_matches += 1
+                    
+                    # Create link to all matching methods (in case of overloads)
+                    for java_method in matched_methods:
+                        info('[GraphQL Application] >>> CREATING LINK: callLink')
+                        info('[GraphQL Application]     FROM (frontend): ' + str(client_obj.get_fullname()) + ' [' + client_obj.get_type() + ']')
+                        info('[GraphQL Application]     TO (backend):    ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
+                        create_link('callLink', client_obj, java_method)
+                        links_created += 1
+                    
+                    queries_matched += 1
+                else:
+                    debug('[GraphQL Application] No Java method match for client query: "' + real_name + '"')
+                    not_matched += 1
+                    
+            except Exception as e:
+                warning('[GraphQL Application] !!! ERROR linking client query "' + client_obj.get_name() + '": ' + str(e))
+                debug('[GraphQL Application] ' + traceback.format_exc())
+        
+        # Process mutations
+        for client_obj in client_mutations:
+            try:
+                obj_name = client_obj.get_name()
+                debug('[GraphQL Application] Processing client mutation: "' + obj_name + '"')
+                
+                # Parse "mutation:real_name" to get real_name
+                if ':' in obj_name:
+                    real_name = obj_name.split(':')[1]
+                    debug('[GraphQL Application]   - Extracted real name: "' + real_name + '"')
+                else:
+                    real_name = obj_name
+                    debug('[GraphQL Application]   - Using full name as real name: "' + real_name + '"')
+                
+                if real_name and real_name in java_methods_by_name:
+                    matched_methods = java_methods_by_name[real_name]
+                    
+                    if len(matched_methods) > 1:
+                        warning('[GraphQL Application] Multiple Java methods found with name "' + real_name + '": ' + str(len(matched_methods)) + ' matches (linking to all)')
+                        multiple_matches += 1
+                    
+                    # Create link to all matching methods (in case of overloads)
+                    for java_method in matched_methods:
+                        info('[GraphQL Application] >>> CREATING LINK: callLink')
+                        info('[GraphQL Application]     FROM (frontend): ' + str(client_obj.get_fullname()) + ' [' + client_obj.get_type() + ']')
+                        info('[GraphQL Application]     TO (backend):    ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
+                        create_link('callLink', client_obj, java_method)
+                        links_created += 1
+                    
+                    mutations_matched += 1
+                else:
+                    debug('[GraphQL Application] No Java method match for client mutation: "' + real_name + '"')
+                    not_matched += 1
+                    
+            except Exception as e:
+                warning('[GraphQL Application] !!! ERROR linking client mutation "' + client_obj.get_name() + '": ' + str(e))
+                debug('[GraphQL Application] ' + traceback.format_exc())
+        
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] FRONTEND-BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' CALL links')
+        info('[GraphQL Application]   - Query operations:     ' + str(queries_matched) + ' matched')
+        info('[GraphQL Application]   - Mutation operations:  ' + str(mutations_matched) + ' matched')
+        info('[GraphQL Application]   - Not matched:          ' + str(not_matched))
+        if multiple_matches > 0:
+            info('[GraphQL Application]   - Multiple matches:     ' + str(multiple_matches) + ' operations linked to multiple methods')
         info('[GraphQL Application] ========================================')
