@@ -92,6 +92,49 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         debug('[GraphQL Application] Searching for client operations...')
         client_queries = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientQuery']
         client_mutations = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientMutation']
+    
+    def _get_parent(self, obj, application):
+        """
+        Récupère le parent d'un objet en extrayant le nom du parent depuis le fullname.
+        
+        :param obj: L'objet dont on veut récupérer le parent
+        :param application: L'application contenant l'objet
+        :return: L'objet parent ou None si aucun parent n'est trouvé
+        """
+        fullname = obj.get_fullname()
+        
+        # Extract the parent name from the fullname
+        # For example: "com.example.demo.CorsConfig.corsFilter" -> "CorsConfig"
+        if '.' in fullname:
+            parent_name = fullname.split('.')[-2]
+            
+            # Search for the parent object by name
+            parents = list(application.get_objects_by_name(parent_name))
+            if parents:
+                return parents[0]
+        
+        return None
+    
+    def _link_client_to_schema(self, application):
+        """
+        Create USE links between GraphQL client operations and schema objects.
+        
+        Finds all GraphQLClientQuery and GraphQLClientMutation objects,
+        then links them to corresponding GraphQLQuery and GraphQLMutation
+        objects from the schema.
+        
+        Args:
+            application: CAST Application object
+        """
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] Starting link creation process')
+        info('[GraphQL Application] ========================================')
+        
+        # Find all client operations using get_objects() and filtering by type
+        # get_objects() returns Object instances, get_type() returns the type name
+        debug('[GraphQL Application] Searching for client operations...')
+        client_queries = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientQuery']
+        client_mutations = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientMutation']
         
         info('[GraphQL Application] Found ' + str(len(client_queries)) + ' GraphQLClientQuery objects')
         for obj in client_queries:
@@ -246,30 +289,32 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
 
     def _link_backend_to_schema(self, application):
         """
-        Create USE links between Java backend methods and GraphQL schema fields.
+        Create RELY ON links between Java backend methods and GraphQL schema fields.
         
-        NAIVE IMPLEMENTATION:
-        Uses simple name-based matching between Java method names and GraphQL field names.
-        This may create false positives (linking unrelated methods with same names).
+        Uses name-based matching between Java method names and GraphQL field names,
+        with annotation verification to reduce false positives.
         
-        Future enhancement: Should verify @Controller and @QueryMapping/@MutationMapping
-        annotations, but Java analyzer currently doesn't broadcast annotation data.
-        See README "Backend-to-Schema Linking (Future Enhancement)" for details.
+        Only creates links when:
+        - Parent class has @Controller annotation, AND
+        - Method name matches a GraphQL field name, AND
+        - Method has the appropriate annotation:
+          - @QueryMapping for Query fields
+          - @MutationMapping for Mutation fields
         
         Matching logic:
-        - Java method "user" → GraphQL field "Query.user"
-        - Java method "createUser" → GraphQL field "Mutation.createUser"
+        - Java method "user" with @QueryMapping in a @Controller class → GraphQL field "Query.user"
+        - Java method "createUser" with @MutationMapping in a @Controller class → GraphQL field "Mutation.createUser"
         
         Args:
             application: CAST Application object
         """
         info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] Starting backend-to-schema link creation (NAIVE)')
+        info('[GraphQL Application] Starting backend-to-schema link creation')
         info('[GraphQL Application] ========================================')
         
-        # Find all Java methods
+        # Find all Java methods with properties loaded to check annotations
         debug('[GraphQL Application] Searching for Java methods...')
-        java_methods = [obj for obj in application.get_objects() if obj.get_type() == 'JV_METHOD']
+        java_methods = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'JV_METHOD']
         
         info('[GraphQL Application] Found ' + str(len(java_methods)) + ' JV_METHOD objects')
         if len(java_methods) > 20:
@@ -345,25 +390,71 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                 method_name = java_method.get_name()
                 debug('[GraphQL Application] Processing Java method: "' + method_name + '"')
                 
+                # Get parent class of the Java method
+                parent_class = self._get_parent(java_method, application)
+                
+                # Check if parent class has @Controller annotation
+                if parent_class:
+                    debug('[GraphQL Application]   - Parent class: "' + parent_class.get_fullname() + '"')
+                    parent_annotations = []
+                    try:
+                        parent_annotations = parent_class.get_property("CAST_Java_AnnotationMetrics.Annotation")
+                        if parent_annotations:
+                            debug('[GraphQL Application]   - Parent annotations: ' + str(parent_annotations))
+                    except:
+                        pass  # No annotations or property not loaded
+                    
+                    # Skip if parent class doesn't have @Controller annotation
+                    has_controller = any('@Controller' in str(ann) for ann in parent_annotations) if parent_annotations else False
+                    if not has_controller:
+                        debug('[GraphQL Application]   - Skipping: Parent class does not have @Controller annotation')
+                        continue
+                else:
+                    debug('[GraphQL Application]   - Warning: Could not find parent class, skipping method')
+                    continue
+                
+                # Get method annotations to reduce false positives
+                annotations = []
+                try:
+                    annotations = java_method.get_property("CAST_Java_AnnotationMetrics.Annotation")
+                    if annotations:
+                        debug('[GraphQL Application]   - Annotations: ' + str(annotations))
+                except:
+                    pass  # No annotations or property not loaded
+                
                 # Try to match with Query fields first
                 if method_name in schema_queries:
-                    schema_obj = schema_queries[method_name]
-                    info('[GraphQL Application] >>> CREATING LINK: relyonLink')
-                    info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
-                    info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
-                    create_link('relyonLink', java_method, schema_obj)
-                    links_created += 1
-                    queries_matched += 1
+                    # Check if method has @QueryMapping annotation
+                    has_query_mapping = any('@QueryMapping' in str(ann) for ann in annotations) if annotations else False
+                    
+                    if has_query_mapping:
+                        schema_obj = schema_queries[method_name]
+                        info('[GraphQL Application] >>> CREATING LINK: relyonLink')
+                        info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
+                        info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                        info('[GraphQL Application]     ANNOTATION: ' + str([ann for ann in annotations if '@QueryMapping' in str(ann)]))
+                        create_link('relyonLink', java_method, schema_obj)
+                        links_created += 1
+                        queries_matched += 1
+                    else:
+                        debug('[GraphQL Application]   - Skipping: No @QueryMapping annotation found')
                 
                 # Try to match with Mutation fields
                 elif method_name in schema_mutations:
-                    schema_obj = schema_mutations[method_name]
-                    info('[GraphQL Application] >>> CREATING LINK: relyonLink')
-                    info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
-                    info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
-                    create_link('relyonLink', java_method, schema_obj)
-                    links_created += 1
-                    mutations_matched += 1
+                    # Check if method has @MutationMapping annotation
+                    has_mutation_mapping = any('@MutationMapping' in str(ann) for ann in annotations) if annotations else False
+                    
+                    if has_mutation_mapping:
+                        schema_obj = schema_mutations[method_name]
+                        info('[GraphQL Application] >>> CREATING LINK: relyonLink')
+                        info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
+                        info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                        info('[GraphQL Application]     ANNOTATION: ' + str([ann for ann in annotations if '@MutationMapping' in str(ann)]))
+                        create_link('relyonLink', java_method, schema_obj)
+                        links_created += 1
+                        mutations_matched += 1
+                    else:
+                        debug('[GraphQL Application]   - Skipping: No @MutationMapping annotation found')
                 
                 else:
                     # No match found - this is expected for most Java methods
