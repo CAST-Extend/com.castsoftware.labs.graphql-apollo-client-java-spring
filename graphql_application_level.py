@@ -95,11 +95,11 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
     
     def _get_parent(self, obj, application):
         """
-        Récupère le parent d'un objet en extrayant le nom du parent depuis le fullname.
+        Get the parent object by extracting the parent name from the fullname.
         
-        :param obj: L'objet dont on veut récupérer le parent
-        :param application: L'application contenant l'objet
-        :return: L'objet parent ou None si aucun parent n'est trouvé
+        :param obj: The object whose parent we want to retrieve
+        :param application: The application containing the object
+        :return: The parent object or None if no parent is found
         """
         fullname = obj.get_fullname()
         
@@ -109,10 +109,10 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
             parent_name = fullname.split('.')[-2]
             
             # Search for the parent object by name
-            parents = list(application.get_objects_by_name(parent_name))
-            if parents:
-                return parents[0]
-        
+            parent_obj = next((o for o in application.objects().load_property("CAST_Java_AnnotationMetrics.Annotation") if getattr(o, "name", None) == parent_name and getattr(getattr(o, "type", None), "name", None) == "JV_CLASS"), None)
+            return parent_obj if parent_obj else (
+                None
+            )
         return None
     
     def _link_client_to_schema(self, application):

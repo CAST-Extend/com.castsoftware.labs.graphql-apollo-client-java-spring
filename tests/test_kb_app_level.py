@@ -30,10 +30,10 @@ class TestLocalKb(unittest.TestCase):
             parent_name = fullname.split('.')[-2]
 
             # Chercher l'objet parent par nom
-            parents = list(application.get_objects_by_name(parent_name))
-            if parents:
-                return parents[0]
-        
+            parent_obj = next((o for o in application.objects().load_property("CAST_Java_AnnotationMetrics.Annotation") if getattr(o, "name", None) == parent_name and getattr(getattr(o, "type", None), "name", None) == "JV_CLASS"), None)
+            return parent_obj if parent_obj else (
+                None
+            )
         return None
 
     def debug_print_all_object_properties(self, obj):
@@ -85,6 +85,7 @@ class TestLocalKb(unittest.TestCase):
             
             # Retrieving parent object
             parent = self.get_parent(method, application)
+            print("  CAST_Java_AnnotationMetrics.Annotation for class: {}".format(parent.get_property("CAST_Java_AnnotationMetrics.Annotation")))
             
             if parent:
                 print("  Parent: {} (type: {})".format(parent.get_fullname(), parent.get_type()))
