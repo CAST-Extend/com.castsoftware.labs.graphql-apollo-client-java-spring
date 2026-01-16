@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-GraphQL Client Analyzer - Links React/Apollo Client code to GraphQL schema
+GraphQL Client Analyzer - Two-level extraction for Apollo Client
 
-This extension listens to HTML5/JavaScript analyzer events to detect GraphQL
-operations in React code (useQuery, useMutation) and creates links to the
-GraphQL schema objects created by the main GraphQL extension.
-
-Based on the approach from Isabelle Boillon (HTML5/JS extension expert).
+LEVEL 1: gql definitions (GraphQLClientQuery/Mutation/Subscription)
+  - Extracts gql`...` template literals
+  - Creates objects for query/mutation/subscription definitions
+  
+LEVEL 2: Apollo hook calls (GraphQL*Request)
+  - Extracts useQuery/useLazyQuery/useMutation/useSubscription
+  - Creates objects for hook usage
+  - Links to LEVEL 1 definitions
 
 Architecture:
 - Event-driven: Listens to HTML5/JS analyzer broadcasts
-- AST traversal: Walks JavaScript AST to find Apollo Client hooks
-- GraphQL parsing: Extracts operation metadata from GraphQL text
-- Object creation: Creates custom client objects as children of JS functions
-- Linking: Links client objects to existing GraphQL schema objects
+- AST traversal: Finds both gql definitions and hook calls
+- Linking: Request objects → Client definitions → Schema fields
 """
 
 import re
@@ -40,37 +41,86 @@ def is_function_call_part(ast):
 
 class GraphQLClientAnalyzer(ua.Extension):
     """
-    Extension that links React GraphQL operations to schema objects.
-    
-    Workflow (based on Isabelle's approach):
-    1. In start_javascript_content: Collect files with useQuery/useMutation imports
-    2. In end_javascript_contents: Walk AST to find calls, create objects and links
+    Two-level GraphQL client analysis:
+    - LEVEL 1: gql definitions 
+    - LEVEL 2: Apollo hook calls
     """
     
     def __init__(self):
-        """Initialize the analyzer."""
-        self.graphql_jscontent = []  # JS content files with GraphQL imports
+        self.graphql_jscontent = []
+        self.gql_definitions = {}  # Map variable name to client object
+    
+    def _get_function_parameters(self, ast):
+        """
+        Extract parameters from FunctionCall or FunctionCallPart.
+        
+        FunctionCall (e.g., gql`...`) needs to access its first FunctionCallPart.
+        FunctionCallPart (e.g., useQuery(...)) has direct access to parameters.
+        """
+        try:
+            log.debug('[GraphQL Client] _get_function_parameters: ast type=' + str(type(ast)))
+            
+            # Case 1: FunctionCall (has get_function_call_parts())
+            if is_function_call(ast):
+                log.debug('[GraphQL Client]   -> Detected as FunctionCall, getting first part...')
+                parts = ast.get_function_call_parts()
+                log.debug('[GraphQL Client]   -> Found ' + str(len(parts) if parts else 0) + ' function call parts')
+                if parts and len(parts) > 0:
+                    params = parts[0].get_parameters()
+                    log.debug('[GraphQL Client]   -> Extracted ' + str(len(params)) + ' parameters from first part')
+                    return params
+                log.debug('[GraphQL Client]   -> No parts found, returning empty list')
+                return []
+            
+            # Case 2: FunctionCallPart (has get_parameters() directly)
+            elif is_function_call_part(ast):
+                log.debug('[GraphQL Client]   -> Detected as FunctionCallPart, getting parameters directly...')
+                params = ast.get_parameters()
+                log.debug('[GraphQL Client]   -> Extracted ' + str(len(params)) + ' parameters')
+                return params
+            
+            # Case 3: Unknown type, try get_parameters() anyway
+            elif hasattr(ast, 'get_parameters'):
+                log.debug('[GraphQL Client]   -> Unknown type but has get_parameters(), trying anyway...')
+                params = ast.get_parameters()
+                log.debug('[GraphQL Client]   -> Extracted ' + str(len(params)) + ' parameters')
+                return params
+            
+            log.warning('[GraphQL Client]   -> No known method to extract parameters from type: ' + str(type(ast)))
+            return []
+        except Exception as e:
+            log.warning('[GraphQL Client] Error in _get_function_parameters: ' + str(e))
+            log.debug('[GraphQL Client] ' + traceback.format_exc())
+            return []
     
     @Event('com.castsoftware.html5', 'start_javascript_content')
     def on_start_javascript_content(self, jsContent):
         """
-        Event handler for each JavaScript/JSX file.
-        Collect files that have useQuery or useMutation imports.
+        LEVEL 0: Collect files with GraphQL imports.
         
-        Args:
-            jsContent: JavaScript AST object from HTML5/JS analyzer
+        Called for each JavaScript/JSX file during analysis.
+        Filters files that import Apollo Client hooks or gql template tag.
         """
         try:
-            log.debug('[GraphQL Client] start_javascript_content: ' + 
-                     str(jsContent.get_file().get_path()))
+            file_path = str(jsContent.get_file().get_path())
+            log.debug('[GraphQL Client] Processing file: ' + file_path)
             
-            # Check if this file imports useQuery or useMutation
+            # Log jsContent structure for local testing
+            log.debug('[GraphQL Client] jsContent type: ' + str(type(jsContent)))
+            log.debug('[GraphQL Client] jsContent methods: ' + str(dir(jsContent)))
+            
+            # Check imports for GraphQL-related symbols
+            imports = jsContent.get_imports()
+            log.debug('[GraphQL Client] Found ' + str(len(list(imports))) + ' imports')
+            
             for _import in jsContent.get_imports():
                 import_name = _import.get_what_name()
-                if import_name in ['useQuery', 'useMutation']:
+                log.debug('[GraphQL Client]   - Import: ' + str(import_name))
+                
+                # Filter: only process files that use Apollo Client or gql
+                if import_name in ['useQuery', 'useLazyQuery', 'useMutation', 'useSubscription', 'gql']:
                     self.graphql_jscontent.append(jsContent)
-                    log.debug('[GraphQL Client] File has GraphQL imports: ' + 
-                             str(jsContent.get_file().get_path()))
+                    log.info('[GraphQL Client] ✓ File added for processing: ' + file_path)
                     break
                     
         except Exception as e:
@@ -79,309 +129,809 @@ class GraphQLClientAnalyzer(ua.Extension):
     
     @Event('com.castsoftware.html5', 'end_javascript_contents')
     def on_end_javascript_contents(self):
-        """
-        Event handler called after all JavaScript files are processed.
-        Walk AST to find GraphQL calls and create objects/links.
-        """
+        """Process all GraphQL files."""
         try:
-            log.info('[GraphQL Client] end_javascript_contents - Processing ' + 
-                    str(len(self.graphql_jscontent)) + ' files with GraphQL imports')
+            log.info('[GraphQL Client] Processing ' + str(len(self.graphql_jscontent)) + ' files')
             
             for jscontent in self.graphql_jscontent:
                 self._process_graphql_content(jscontent)
             
-            log.info('[GraphQL Client] GraphQL client analysis complete')
+            log.info('[GraphQL Client] Analysis complete')
             
         except Exception as e:
             log.warning('[GraphQL Client] Error in end_javascript_contents: ' + str(e))
-            log.debug('[GraphQL Client] ' + traceback.format_exc())
-        finally:
-            # Clean up for next analysis
-            self.graphql_jscontent = []
     
     def _process_graphql_content(self, jscontent):
         """
-        Process a JavaScript content file for GraphQL operations.
+        Process one file for both LEVEL 1 and LEVEL 2 extraction.
         
-        Args:
-            jscontent: JavaScript AST object
+        Two-phase approach:
+        1. Extract all gql definitions first (LEVEL 1)
+        2. Extract all Apollo hook calls (LEVEL 2)
+        
+        This order ensures gql_definitions dict is populated before 
+        hook calls try to link to them.
         """
         try:
-            # Find all useQuery/useMutation calls in the AST
-            graphql_calls = self._get_graphql_calls(jscontent)
-            log.info('[GraphQL Client] graphql_calls=' + str(graphql_calls))
+            file_path = str(jscontent.get_file().get_path())
+            log.info('[GraphQL Client] ========================================')
+            log.info('[GraphQL Client] Processing file: ' + file_path)
+            log.info('[GraphQL Client] ========================================')
             
-            for graphql_call in graphql_calls:
-                self._process_graphql_call(graphql_call, jscontent)
+            # Debug: Print full jscontent structure
+            log.info('[GraphQL Client] === JSCONTENT INSPECTION ===')
+            log.info('[GraphQL Client] jscontent type: ' + str(type(jscontent)))
+            log.info('[GraphQL Client] jscontent dir: ' + str([m for m in dir(jscontent) if not m.startswith('_')]))
+            
+            # Try to get children
+            try:
+                children = jscontent.get_children()
+                log.info('[GraphQL Client] jscontent.get_children() count: ' + str(len(list(children))))
+                children = jscontent.get_children()  # Re-get since we consumed it
+                if children:
+                    for idx, child in enumerate(children):
+                        if idx < 5:  # Limit to first 5
+                            log.info('[GraphQL Client]   Child ' + str(idx) + ': type=' + str(type(child)) + ', name=' + str(getattr(child, 'get_name', lambda: 'N/A')()))
+            except Exception as e:
+                log.info('[GraphQL Client] Error getting children: ' + str(e))
+            
+            # Try to get file content
+            try:
+                file_obj = jscontent.get_file()
+                log.info('[GraphQL Client] file object: ' + str(file_obj))
+                log.info('[GraphQL Client] file path: ' + str(file_obj.get_path()))
+            except Exception as e:
+                log.info('[GraphQL Client] Error getting file: ' + str(e))
+            
+            log.info('[GraphQL Client] === END JSCONTENT INSPECTION ===')
+            
+            # LEVEL 1: Extract gql`...` definitions
+            # Creates GraphQLClientQuery/Mutation/Subscription objects
+            log.debug('[GraphQL Client] LEVEL 1: Extracting gql definitions...')
+            
+            # Debug: Check if we have a valid AST root
+            root = jscontent.get_children()[0] if jscontent.get_children() else None
+            log.debug('[GraphQL Client] AST root: ' + str(root))
+            log.debug('[GraphQL Client] AST root type: ' + str(type(root) if root else 'None'))
+            if root:
+                log.debug('[GraphQL Client] AST root has ' + str(len(list(root.get_children()))) + ' children')
+            
+            gql_defs = self._extract_gql_definitions(jscontent)
+            log.info('[GraphQL Client] Found ' + str(len(gql_defs)) + ' gql definitions')
+            
+            for gql_def in gql_defs:
+                self._create_client_definition(gql_def, jscontent)
+            
+            # LEVEL 2: Extract Apollo hook calls
+            # Creates GraphQL*Request objects that link to LEVEL 1 objects
+            log.debug('[GraphQL Client] LEVEL 2: Extracting Apollo hooks...')
+            hook_calls = self._extract_apollo_hooks(jscontent)
+            log.info('[GraphQL Client] Found ' + str(len(hook_calls)) + ' Apollo hook calls')
+            
+            for hook_call in hook_calls:
+                self._create_request_object(hook_call, jscontent)
+            
+            log.info('[GraphQL Client] File processing complete: ' + file_path)
                 
         except Exception as e:
             log.warning('[GraphQL Client] Error processing content: ' + str(e))
             log.debug('[GraphQL Client] ' + traceback.format_exc())
     
-    def _get_graphql_calls(self, ast):
-        """
-        Recursively find all useQuery/useMutation calls in AST.
+    def _extract_gql_definitions(self, jscontent):
+        """LEVEL 1: Extract gql`...` definitions."""
+        definitions = []
         
-        Args:
-            ast: AST node
-            
-        Returns:
-            list: List of function call AST nodes
-        """
+        # BUGFIX: Traverse ALL children, not just the first one
+        log.debug('[GraphQL Client] Traversing all jscontent children for gql definitions...')
+        for idx, child in enumerate(jscontent.get_children()):
+            log.debug('[GraphQL Client]   Searching child ' + str(idx) + ': ' + str(type(child)))
+            self._find_gql_definitions(child, definitions)
+        
+        return definitions
+    
+    def _find_gql_definitions(self, ast, results):
+        """Recursively find gql template literals."""
         if not ast:
-            return []
+            return
         
-        if is_function_call_part(ast) and ast.get_name() in ['useQuery', 'useMutation']:
-            return [ast]
-        
-        results = []
         try:
+            # Debug: log every node we traverse
+            node_name = 'unknown'
+            try:
+                node_name = ast.get_name()
+            except:
+                pass
+            
+            is_call = is_function_call(ast)
+            
+            # Log when we find 'gql' anywhere
+            if node_name == 'gql':
+                log.debug('[GraphQL Client] >>> Found node named "gql", is_function_call=' + str(is_call))
+                log.debug('[GraphQL Client]     Node type: ' + str(type(ast)))
+                log.debug('[GraphQL Client]     Node methods: ' + str([m for m in dir(ast) if not m.startswith('_')]))
+            
+            if is_call and node_name == 'gql':
+                log.info('[GraphQL Client] ✓ FOUND gql definition!')
+                results.append(ast)
+            
             for child in ast.get_children():
-                results.extend(self._get_graphql_calls(child))
+                self._find_gql_definitions(child, results)
+        except Exception as e:
+            log.debug('[GraphQL Client] Error in _find_gql_definitions: ' + str(e))
+    
+    def _create_client_definition(self, gql_ast, jscontent):
+        """
+        LEVEL 1: Create GraphQLClient* object for gql definition.
+        
+        Example input:
+            export const GET_USERS = gql`query GetUsers { users { id } }`;
+        
+        Creates:
+            - Object type: GraphQLClientQuery
+            - Name: GET_USERS (variable name)
+            - Properties: operationName, rawQueryText, variables, fieldsSelected, aliases
+        """
+        try:
+            log.info('[GraphQL Client] >>> Entering _create_client_definition')
+            
+            # Step 1: Extract GraphQL text from gql template literal
+            graphql_text = self._extract_gql_text(gql_ast)
+            if not graphql_text:
+                log.warning('[GraphQL Client] FAILED: Could not extract gql text, skipping')
+                return
+            
+            log.debug('[GraphQL Client] Extracted GraphQL text (first 100 chars): ' + graphql_text[:100])
+            
+            # Step 2: Parse GraphQL operation to extract metadata
+            operation_data = self._parse_operation(graphql_text)
+            if not operation_data:
+                log.warning('[GraphQL Client] FAILED: Could not parse GraphQL operation, skipping')
+                log.warning('[GraphQL Client] GraphQL text: ' + graphql_text)
+                return
+            
+            log.debug('[GraphQL Client] Parsed operation: ' + str(operation_data))
+            
+            # Step 3: Determine object type based on operation type
+            op_type = operation_data['type']
+            if op_type == 'query':
+                object_type = 'GraphQLClientQuery'
+            elif op_type == 'mutation':
+                object_type = 'GraphQLClientMutation'
+            elif op_type == 'subscription':
+                object_type = 'GraphQLClientSubscription'
+            else:
+                log.warning('[GraphQL Client] Unknown operation type: ' + str(op_type))
+                return
+            
+            # Step 4: Get variable name (e.g., GET_USERS)
+            variable_name = self._get_variable_name(gql_ast)
+            if not variable_name:
+                log.warning('[GraphQL Client] FAILED: Could not determine variable name, skipping')
+                log.warning('[GraphQL Client] Operation type: ' + str(op_type) + ', operation name: ' + str(operation_data.get('operationName')))
+                return
+            
+            # Step 5: Build unique fullname (file:line format)
+            file_path = str(jscontent.get_file().get_path())
+            line_num = self._get_line_number(gql_ast)
+            fullname = file_path + ':' + str(line_num)
+            
+            log.info('[GraphQL Client] Creating ' + object_type + ': ' + variable_name)
+            log.debug('[GraphQL Client]   - Fullname: ' + fullname)
+            log.debug('[GraphQL Client]   - Operation: ' + str(operation_data.get('operationName', 'anonymous')))
+            
+            # Step 6: Create CAST custom object
+            client_obj = CustomObject()
+            client_obj.set_type(object_type)
+            client_obj.set_name(variable_name)
+            client_obj.set_fullname(fullname)
+            
+            # Step 7: Set parent (file-level KB object)
+            parent_kb = self._get_file_parent(jscontent)
+            if parent_kb:
+                client_obj.set_parent(parent_kb)
+                log.debug('[GraphQL Client]   - Parent: ' + str(parent_kb))
+            
+            # Step 8: Save object to KB (MUST be done before save_property)
+            client_obj.save()
+            
+            # Step 9: Save properties (AFTER save())
+            client_obj.save_property('GraphQL_Client_Definition.operationName', operation_data.get('operationName', ''))
+            client_obj.save_property('GraphQL_Client_Definition.rawQueryText', graphql_text)
+            
+            # Convert lists to comma-separated strings (save_property only accepts str or int)
+            if operation_data.get('variables'):
+                log.debug('[GraphQL Client]   - Variables: ' + str(operation_data['variables']))
+                variables_str = ', '.join(operation_data['variables'])
+                client_obj.save_property('GraphQL_Client_Definition.variables', variables_str)
+            
+            if operation_data.get('fieldsSelected'):
+                log.debug('[GraphQL Client]   - Fields: ' + str(operation_data['fieldsSelected']))
+                fields_str = ', '.join(operation_data['fieldsSelected'])
+                client_obj.save_property('GraphQL_Client_Definition.fieldsSelected', fields_str)
+            
+            if operation_data.get('aliases'):
+                log.debug('[GraphQL Client]   - Aliases: ' + str(operation_data['aliases']))
+                for alias, field in operation_data['aliases'].items():
+                    client_obj.save_property('GraphQL_Client_Definition.alias.' + alias, field)
+            
+            # Step 10: Create bookmark for source navigation
+            try:
+                bookmark = gql_ast.create_bookmark(jscontent.get_file())
+                client_obj.save_position(bookmark)
+                log.debug('[GraphQL Client]   - Bookmark saved')
+            except Exception as e:
+                log.debug('[GraphQL Client]   - Could not create bookmark: ' + str(e))
+            
+            # Step 11: Store in cache for LEVEL 2 linking
+            log.info('[GraphQL Client] >>> Storing definition in cache')
+            log.info('[GraphQL Client]     KEY (variable_name): "' + variable_name + '"')
+            log.info('[GraphQL Client]     VALUE (object type): ' + object_type)
+            self.gql_definitions[variable_name] = client_obj
+            log.info('[GraphQL Client]     Cache now contains ' + str(len(self.gql_definitions)) + ' definition(s): ' + str(list(self.gql_definitions.keys())))
+            log.info('[GraphQL Client] ✓ Created ' + object_type + ': ' + variable_name)
+            
+        except Exception as e:
+            log.warning('[GraphQL Client] Error creating definition: ' + str(e))
+            log.debug('[GraphQL Client] ' + traceback.format_exc())
+    
+    def _extract_apollo_hooks(self, jscontent):
+        """LEVEL 2: Extract Apollo hook calls."""
+        hooks = []
+        
+        # BUGFIX: Traverse ALL children, not just the first one
+        log.debug('[GraphQL Client] Traversing all jscontent children for Apollo hooks...')
+        for idx, child in enumerate(jscontent.get_children()):
+            log.debug('[GraphQL Client]   Searching child ' + str(idx) + ': ' + str(type(child)))
+            self._find_apollo_hooks(child, hooks)
+        
+        return hooks
+    
+    def _find_apollo_hooks(self, ast, results):
+        """Recursively find Apollo hook calls."""
+        if not ast:
+            return
+        
+        try:
+            # Debug: log when we encounter hooks
+            node_name = 'unknown'
+            try:
+                node_name = ast.get_name()
+            except:
+                pass
+            
+            is_call_part = is_function_call_part(ast)
+            
+            # Log when we find hook names anywhere
+            if node_name in ['useQuery', 'useLazyQuery', 'useMutation', 'useSubscription']:
+                log.debug('[GraphQL Client] >>> Found node named "' + node_name + '", is_function_call_part=' + str(is_call_part))
+                log.debug('[GraphQL Client]     Node type: ' + str(type(ast)))
+            
+            if is_call_part and node_name in ['useQuery', 'useLazyQuery', 'useMutation', 'useSubscription']:
+                log.info('[GraphQL Client] ✓ FOUND Apollo hook: ' + node_name)
+                results.append(ast)
+            
+            for child in ast.get_children():
+                self._find_apollo_hooks(child, results)
+        except Exception as e:
+            log.debug('[GraphQL Client] Error in _find_apollo_hooks: ' + str(e))
+    
+    def _create_request_object(self, hook_ast, jscontent):
+        """
+        LEVEL 2: Create GraphQL*Request object for Apollo hook call.
+        
+        Example input:
+            const { data } = useQuery(GET_USERS, { fetchPolicy: 'cache-first' });
+        
+        Creates:
+            - Object type: GraphQLQueryRequest
+            - Name: GET_USERS (query variable name)
+            - Properties: hookType, fetchPolicy, errorPolicy
+            - Links: CALL (parent -> request), USES (request -> client definition)
+        """
+        try:
+            hook_name = hook_ast.get_name()
+            log.debug('[GraphQL Client] Processing hook: ' + hook_name)
+            
+            # Step 1: Extract query name from first parameter
+            params = self._get_function_parameters(hook_ast)
+            if not params:
+                log.debug('[GraphQL Client] No parameters found for hook, skipping')
+                return
+            
+            log.debug('[GraphQL Client] Hook has ' + str(len(params)) + ' parameters')
+            
+            query_name = self._get_query_name_from_param(params[0])
+            if not query_name:
+                log.debug('[GraphQL Client] Could not extract query name from parameter, skipping')
+                return
+            
+            log.debug('[GraphQL Client] Query name: ' + query_name)
+            
+            # Step 2: Determine object type based on hook type
+            if hook_name == 'useQuery':
+                object_type = 'GraphQLQueryRequest'
+            elif hook_name == 'useLazyQuery':
+                object_type = 'GraphQLLazyQueryRequest'
+            elif hook_name == 'useMutation':
+                object_type = 'GraphQLMutationRequest'
+            elif hook_name == 'useSubscription':
+                object_type = 'GraphQLSubscriptionRequest'
+            else:
+                log.warning('[GraphQL Client] Unknown hook type: ' + hook_name)
+                return
+            
+            # Step 3: Get parent component (KB object)
+            parent_kb = hook_ast.get_first_kb_parent()
+            if not parent_kb:
+                log.debug('[GraphQL Client] No KB parent found, skipping')
+                return
+            
+            parent_obj = parent_kb.get_kb_object()
+            if not parent_obj:
+                log.debug('[GraphQL Client] Parent has no KB object, skipping')
+                return
+            
+            log.debug('[GraphQL Client] Parent: ' + str(parent_obj))
+            
+            # Step 4: Build unique fullname (file:line format)
+            file_path = str(jscontent.get_file().get_path())
+            line_num = self._get_line_number(hook_ast)
+            fullname = file_path + ':' + str(line_num)
+            
+            # Step 4b: Build unique name by prepending hook type to query name
+            # This differentiates Request objects from Client Definition objects
+            # Example: useQuery + GET_USERS → useQuery:GET_USERS
+            unique_request_name = hook_name + ':' + query_name
+            
+            log.info('[GraphQL Client] Creating ' + object_type + ': ' + unique_request_name)
+            log.debug('[GraphQL Client]   - Fullname: ' + fullname)
+            log.debug('[GraphQL Client]   - Parent component: ' + str(parent_obj.get_fullname() if hasattr(parent_obj, 'get_fullname') else parent_obj))
+            
+            # Step 5: Create CAST custom object
+            request_obj = CustomObject()
+            request_obj.set_type(object_type)
+            request_obj.set_name(unique_request_name)
+            request_obj.set_fullname(fullname)
+            request_obj.set_parent(parent_obj)
+            
+            # Step 6: Save object to KB (MUST be done before save_property)
+            request_obj.save()
+            
+            # Step 7: Save properties (AFTER save())
+            request_obj.save_property('GraphQL_Hook_Request.hookType', hook_name)
+            
+            # Extract options from second parameter if present
+            options = self._extract_hook_options(params)
+            if options.get('fetchPolicy'):
+                log.debug('[GraphQL Client]   - fetchPolicy: ' + options['fetchPolicy'])
+                request_obj.save_property('GraphQL_Hook_Request.fetchPolicy', options['fetchPolicy'])
+            if options.get('errorPolicy'):
+                log.debug('[GraphQL Client]   - errorPolicy: ' + options['errorPolicy'])
+                request_obj.save_property('GraphQL_Hook_Request.errorPolicy', options['errorPolicy'])
+            
+            # Step 8: Create bookmark and CALL link (component -> request)
+            try:
+                bookmark = hook_ast.create_bookmark(jscontent.get_file())
+                request_obj.save_position(bookmark)
+                create_link('callLink', parent_obj, request_obj, bookmark)
+                log.debug('[GraphQL Client]   - CALL link created (with bookmark)')
+            except:
+                try:
+                    create_link('callLink', parent_obj, request_obj)
+                    log.debug('[GraphQL Client]   - CALL link created (no bookmark)')
+                except Exception as e:
+                    log.debug('[GraphQL Client]   - Could not create CALL link: ' + str(e))
+            
+            # Step 9: Create USES link (request -> client definition)
+            log.info('[GraphQL Client] >>> Searching for client definition')
+            log.info('[GraphQL Client]     SEARCHING FOR: "' + query_name + '"')
+            log.info('[GraphQL Client]     AVAILABLE KEYS: ' + str(list(self.gql_definitions.keys())))
+            log.info('[GraphQL Client]     Cache size: ' + str(len(self.gql_definitions)))
+            
+            if query_name in self.gql_definitions:
+                client_obj = self.gql_definitions[query_name]
+                log.info('[GraphQL Client]     ✓ MATCH FOUND!')
+                try:
+                    create_link('useLink', request_obj, client_obj)
+                    log.info('[GraphQL Client]   - ✓ USES link created: ' + object_type + ' -> ' + query_name)
+                except Exception as e:
+                    log.warning('[GraphQL Client]   - Could not create USES link: ' + str(e))
+            else:
+                log.warning('[GraphQL Client]     ✗ NO MATCH FOUND!')
+                log.warning('[GraphQL Client]   - No client definition found for: ' + query_name)
+                log.warning('[GraphQL Client]   - Available definitions: ' + str(list(self.gql_definitions.keys())))
+                # Comparaison caractère par caractère pour debug
+                for available_key in self.gql_definitions.keys():
+                    if available_key.upper() == query_name.upper():
+                        log.warning('[GraphQL Client]   - CASE MISMATCH detected: "' + available_key + '" vs "' + query_name + '"')
+                    else:
+                        log.debug('[GraphQL Client]   - Comparing "' + available_key + '" vs "' + query_name + '" (len: ' + str(len(available_key)) + ' vs ' + str(len(query_name)) + ')')
+            
+            log.info('[GraphQL Client] ✓ Created ' + object_type + ': ' + query_name)
+            
+        except Exception as e:
+            log.warning('[GraphQL Client] Error creating request: ' + str(e))
+            log.debug('[GraphQL Client] ' + traceback.format_exc())
+    
+    def _extract_gql_text(self, gql_ast):
+        """Extract GraphQL text from gql template literal."""
+        try:
+            log.debug('[GraphQL Client] >>> _extract_gql_text: Starting extraction')
+            log.debug('[GraphQL Client]     gql_ast type: ' + str(type(gql_ast)))
+            
+            params = self._get_function_parameters(gql_ast)
+            log.debug('[GraphQL Client]     _get_function_parameters() returned: ' + str(type(params)) + ' with ' + str(len(params) if params else 0) + ' items')
+            
+            if not params:
+                log.warning('[GraphQL Client]     ✗ No parameters found in gql call')
+                return None
+            
+            text_param = params[0]
+            log.debug('[GraphQL Client]     First parameter type: ' + str(type(text_param)))
+            log.debug('[GraphQL Client]     First parameter methods: ' + str([m for m in dir(text_param) if not m.startswith('_')][:20]))
+            
+            evs = text_param.evaluate()
+            log.debug('[GraphQL Client]     evaluate() returned: ' + str(type(evs)) + ' with ' + str(len(list(evs)) if evs else 0) + ' items')
+            
+            if not evs:
+                log.warning('[GraphQL Client]     ✗ No evaluations returned from text_param.evaluate()')
+                return None
+            
+            evs = text_param.evaluate()  # Re-evaluate since we consumed the iterator
+            for idx, ev in enumerate(evs):
+                log.debug('[GraphQL Client]       Evaluation ' + str(idx) + ': type=' + str(type(ev)) + ', str=' + str(ev)[:100])
+                text = str(ev).strip('`').strip()
+                
+                # Clean CAST metadata (tab-separated values after the GraphQL text)
+                # Example: "query { ... }\t0 ; 0\t0\t\t0\t[Module name]"
+                if '\t' in text:
+                    text = text.split('\t')[0].strip()
+                    log.debug('[GraphQL Client]       Cleaned metadata from text')
+                
+                if text:
+                    log.info('[GraphQL Client]     ✓ Extracted gql text (first 100 chars): ' + text[:100])
+                    return text
+            
+            log.warning('[GraphQL Client]     ✗ No valid text found in evaluations')
+            return None
+        except Exception as e:
+            log.warning('[GraphQL Client]     ✗ Exception in _extract_gql_text: ' + str(e))
+            log.debug('[GraphQL Client]     ' + traceback.format_exc())
+            return None
+    
+    def _get_variable_name(self, gql_ast):
+        """Get the variable name for gql definition (e.g., GET_USERS)."""
+        try:
+            log.debug('[GraphQL Client] >>> _get_variable_name: Starting extraction')
+            log.debug('[GraphQL Client]     gql_ast type: ' + str(type(gql_ast)))
+            
+            # Navigate up the AST tree to find the variable name
+            # For: const GET_USERS = gql`...`
+            # AST structure: VarDeclaration -> Assignment -> Identifier (left) / FunctionCall (right)
+            
+            current = gql_ast
+            for level in range(10):  # Limit depth to avoid infinite loops
+                parent = current.get_parent()
+                if not parent:
+                    log.debug('[GraphQL Client]     Level ' + str(level) + ': No parent found')
+                    break
+                
+                parent_type = str(type(parent).__name__)
+                log.debug('[GraphQL Client]     Level ' + str(level) + ': parent type=' + parent_type)
+                
+                # Check if parent is an Assignment
+                if hasattr(parent, 'is_assignment') and parent.is_assignment():
+                    log.debug('[GraphQL Client]     Found Assignment at level ' + str(level))
+                    # Try to get left operand (variable name)
+                    if hasattr(parent, 'get_left_operand'):
+                        left = parent.get_left_operand()
+                        if left and hasattr(left, 'get_name'):
+                            name = left.get_name()
+                            log.debug('[GraphQL Client]       Assignment.left.get_name(): ' + str(name))
+                            if name and name not in ['unknown', 'const', 'let', 'var']:
+                                log.info('[GraphQL Client]     ✓ Variable name from Assignment.left: ' + name)
+                                return name
+                
+                # Check if parent has a useful name
+                if hasattr(parent, 'get_name'):
+                    name = parent.get_name()
+                    log.debug('[GraphQL Client]       parent.get_name(): ' + str(name))
+                    if name and name not in ['unknown', 'const', 'let', 'var', None]:
+                        log.info('[GraphQL Client]     ✓ Variable name from parent level ' + str(level) + ': ' + name)
+                        return name
+                
+                current = parent
+            
+            fallback = 'anonymous_gql_' + str(id(gql_ast))
+            log.warning('[GraphQL Client]     ✗ No variable name found after traversing AST, using fallback: ' + fallback)
+            return fallback
+        except Exception as e:
+            fallback = 'anonymous_gql_' + str(id(gql_ast))
+            log.warning('[GraphQL Client]     ✗ Exception in _get_variable_name: ' + str(e))
+            log.debug('[GraphQL Client]     ' + traceback.format_exc())
+            log.warning('[GraphQL Client]     Using fallback: ' + fallback)
+            return fallback
+    
+    def _get_query_name_from_param(self, param_ast):
+        """Extract query variable name from hook parameter."""
+        try:
+            log.debug('[GraphQL Client] >>> _get_query_name_from_param: Starting extraction')
+            log.debug('[GraphQL Client]     param_ast type: ' + str(type(param_ast)))
+            
+            if hasattr(param_ast, 'get_name'):
+                name = param_ast.get_name()
+                log.debug('[GraphQL Client]     param_ast.get_name(): ' + str(name))
+                if name and name != 'unknown':
+                    log.info('[GraphQL Client]     ✓ Query name from PARAM.get_name(): ' + name)
+                    return name
+            
+            evs = param_ast.evaluate_ast()
+            log.debug('[GraphQL Client]     param_ast.evaluate_ast() returned ' + str(len(evs) if evs else 0) + ' evaluations')
+            
+            if evs:
+                for idx, ev in enumerate(evs):
+                    log.debug('[GraphQL Client]       Evaluation ' + str(idx) + ': type=' + str(type(ev)))
+                    if hasattr(ev, 'get_name'):
+                        name = ev.get_name()
+                        log.debug('[GraphQL Client]       ev.get_name(): ' + str(name))
+                        if name and name != 'unknown' and name != 'gql':
+                            log.info('[GraphQL Client]     ✓ Query name from EVALUATION: ' + name)
+                            return name
+            
+            log.warning('[GraphQL Client]     ✗ No query name found in parameter')
+            return None
+        except Exception as e:
+            log.warning('[GraphQL Client]     ✗ Exception in _get_query_name_from_param: ' + str(e))
+            log.debug('[GraphQL Client]     ' + traceback.format_exc())
+            return None
+    
+    def _extract_hook_options(self, params):
+        """Extract fetchPolicy, errorPolicy from hook options."""
+        options = {}
+        if len(params) < 2:
+            return options
+        
+        try:
+            options_param = params[1]
+            children = options_param.get_children()
+            
+            for child in children:
+                try:
+                    if hasattr(child, 'get_name'):
+                        opt_name = child.get_name()
+                        if opt_name in ['fetchPolicy', 'errorPolicy']:
+                            value = self._extract_option_value(child)
+                            if value:
+                                options[opt_name] = value
+                except:
+                    pass
         except:
             pass
         
-        return results
+        return options
     
-    def _process_graphql_call(self, graphql_call, jscontent):
-        """
-        Process a single useQuery/useMutation call.
-        
-        Args:
-            graphql_call: Function call AST node
-            jscontent: JavaScript AST object for file context
-        """
+    def _extract_option_value(self, option_ast):
+        """Extract string value from option node."""
         try:
-            # Get the hook type (useQuery or useMutation)
-            hook_type = graphql_call.get_name()
+            children = option_ast.get_children()
+            if children:
+                evs = children[0].evaluate()
+                if evs:
+                    for ev in evs:
+                        val = str(ev).strip('"').strip("'")
+                        if val:
+                            return val
+        except:
+            pass
+        return None
+    
+    def _get_line_number(self, ast):
+        """Get line number from AST node."""
+        try:
+            if hasattr(ast, 'get_position'):
+                pos = ast.get_position()
+                if pos and hasattr(pos, 'get_line'):
+                    return pos.get_line()
+        except:
+            pass
+        return 0
+    
+    def _get_file_parent(self, jscontent):
+        """Get file-level parent KB object."""
+        try:
+            log.debug('[GraphQL Client] _get_file_parent: jscontent type=' + str(type(jscontent)))
             
-            # Get the parent function (first KB parent)
-            parent_ast = graphql_call.get_first_kb_parent()
-            if not parent_ast:
-                log.debug('[GraphQL Client] No parent found for ' + hook_type)
-                return
+            # Option 1: Try to get JavaScript initialisation (preferred for JsContent)
+            if hasattr(jscontent, 'create_javascript_initialisation'):
+                parent = jscontent.create_javascript_initialisation()
+                log.debug('[GraphQL Client]   -> Got javascript_initialisation: ' + str(parent))
+                if parent:
+                    return parent
             
-            log.info('[GraphQL Client] parent=' + str(parent_ast))
+            # Option 2: Try to get KB object from JsContent itself
+            if hasattr(jscontent, 'get_kb_object'):
+                parent = jscontent.get_kb_object()
+                log.debug('[GraphQL Client]   -> Got KB object from jscontent: ' + str(parent))
+                if parent:
+                    return parent
             
-            # Get the KB object for the parent
-            parent_kb_object = parent_ast.get_kb_object()
-            if not parent_kb_object:
-                log.debug('[GraphQL Client] Parent has no KB object')
-                return
+            # Option 3: Try to get file's KB object
+            file_obj = jscontent.get_file()
+            if file_obj:
+                log.debug('[GraphQL Client]   -> file_obj: ' + str(file_obj))
+                if hasattr(file_obj, 'get_kb_object'):
+                    parent = file_obj.get_kb_object()
+                    log.debug('[GraphQL Client]   -> Got KB object from file: ' + str(parent))
+                    if parent:
+                        return parent
             
-            log.info('[GraphQL Client] parent kb object=' + str(parent_kb_object))
-            
-            # Get the parameters
-            params = graphql_call.get_parameters()
-            if not params:
-                log.debug('[GraphQL Client] No parameters for ' + hook_type)
-                return
-            
-            param = params[0]
-            log.info('[GraphQL Client] param=' + str(param))
-            
-            # Evaluate the parameter to get the GraphQL text
-            graphql_text = self._evaluate_graphql_param(param)
-            if not graphql_text:
-                log.debug('[GraphQL Client] Could not evaluate GraphQL text')
-                return
-            
-            log.info('[GraphQL Client] graphql_text=' + graphql_text[:100] + '...')
-            
-            # Parse the GraphQL operation
-            operation_info = self._parse_graphql_operation(graphql_text)
-            if not operation_info:
-                log.debug('[GraphQL Client] Could not parse GraphQL operation')
-                return
-            
-            # Create the client object
-            self._create_client_object(
-                hook_type=hook_type,
-                operation_info=operation_info,
-                parent_kb_object=parent_kb_object,
-                graphql_call=graphql_call,
-                jscontent=jscontent
-            )
-            
+            log.warning('[GraphQL Client]   -> No valid parent KB object found')
         except Exception as e:
-            log.warning('[GraphQL Client] Error processing GraphQL call: ' + str(e))
+            log.warning('[GraphQL Client] Error in _get_file_parent: ' + str(e))
             log.debug('[GraphQL Client] ' + traceback.format_exc())
+        return None
     
-    def _evaluate_graphql_param(self, param):
+    def _parse_operation(self, graphql_text):
         """
-        Evaluate the GraphQL parameter to get the query/mutation text.
+        Parse GraphQL operation to extract metadata.
         
-        The parameter is typically a variable that references a gql`...` template literal.
-        We need to evaluate it to get the actual GraphQL text.
+        Handles:
+        - Named operations: query GetUsers($id: ID!) { ... }
+        - Anonymous operations: query { ... }
+        - Mutations and subscriptions
         
-        Args:
-            param: Parameter AST node
-            
-        Returns:
-            str: GraphQL text or None
-        """
-        try:
-            # Try to evaluate the parameter
-            evs = param.evaluate_ast()
-            if not evs:
-                return None
-            
-            for ev in evs:
-                log.debug('[GraphQL Client] evaluation=' + str(ev))
-                
-                # gql`...` is parsed as a function call with the string as parameter
-                # Like: gql('query GetUsers { ... }')
-                if ev and is_function_call(ev) and ev.get_name() == 'gql':
-                    try:
-                        # Get the first function call part
-                        fcall_parts = ev.get_function_call_parts()
-                        if fcall_parts and len(fcall_parts) > 0:
-                            # Get the string parameter
-                            string_param = fcall_parts[0].get_parameters()[0]
-                            # Evaluate the string
-                            evs2 = string_param.evaluate()
-                            if evs2:
-                                for ev2 in evs2:
-                                    text = str(ev2).strip('`').strip()
-                                    log.info('[GraphQL Client] final evaluation=' + text)
-                                    return text
-                    except Exception as e:
-                        log.debug('[GraphQL Client] Error evaluating gql: ' + str(e))
-            
-            return None
-            
-        except Exception as e:
-            log.debug('[GraphQL Client] Error evaluating param: ' + str(e))
-            return None
-    
-    def _parse_graphql_operation(self, graphql_text):
-        """
-        Parse GraphQL operation text to extract metadata.
-        
-        Extracts:
-        - operation_type: 'query' or 'mutation'
-        - operation_name: Named operation (e.g., 'GetUsers') or None
-        - field_name: The root field being queried (e.g., 'users')
-        
-        Args:
-            graphql_text (str): GraphQL query/mutation text
-            
-        Returns:
-            dict: {operation_type, operation_name, field_name} or None
+        Returns dict with: type, operationName, variables, fieldsSelected, aliases
         """
         try:
             text = graphql_text.strip()
+            log.debug('[GraphQL Client] Parsing GraphQL (first 200 chars): ' + text[:200])
             
-            # Pattern for named operations: query OperationName { field ...
-            named_pattern = r'^\s*(query|mutation)\s+([A-Z][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*\{\s*([a-z][A-Za-z0-9_]*)'
+            result = {'type': None, 'operationName': None, 'variables': [], 'fieldsSelected': [], 'aliases': {}}
+            
+            # Pattern for named operations: query OperationName($var: Type) { field ... }
+            named_pattern = r'^\s*(query|mutation|subscription)\s+([A-Z][A-Za-z0-9_]*)\s*(\([^)]*\))?\s*\{\s*([a-zA-Z_][a-zA-Z0-9_]*)'
             match = re.search(named_pattern, text, re.IGNORECASE)
             
             if match:
-                return {
-                    'operation_type': match.group(1).lower(),
-                    'operation_name': match.group(2),
-                    'field_name': match.group(3)
-                }
+                result['type'] = match.group(1).lower()
+                result['operationName'] = match.group(2)
+                
+                # Extract variables from parameter list
+                if match.group(3):
+                    variables = re.findall(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', match.group(3))
+                    result['variables'] = ['$' + v for v in variables]
+                
+                # Extract top-level fields and aliases
+                result['fieldsSelected'] = self._extract_fields(text)
+                result['aliases'] = self._extract_aliases(text)
+                
+                log.debug('[GraphQL Client] Parsed as named ' + result['type'] + ': ' + result['operationName'])
+                log.debug('[GraphQL Client]   - Variables: ' + str(result['variables']))
+                log.debug('[GraphQL Client]   - Fields: ' + str(result['fieldsSelected']))
+                log.debug('[GraphQL Client]   - Aliases: ' + str(result['aliases']))
+                
+                return result
             
-            # Pattern for anonymous queries: query { field ...
-            anonymous_pattern = r'^\s*(query|mutation)\s*(?:\([^)]*\))?\s*\{\s*([a-z][A-Za-z0-9_]*)'
-            match = re.search(anonymous_pattern, text, re.IGNORECASE)
+            # Pattern for anonymous operations: query($var: Type) { field ... }
+            anon_pattern = r'^\s*(query|mutation|subscription)\s*(\([^)]*\))?\s*\{\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+            match = re.search(anon_pattern, text, re.IGNORECASE)
             
             if match:
-                return {
-                    'operation_type': match.group(1).lower(),
-                    'operation_name': None,
-                    'field_name': match.group(2)
-                }
+                result['type'] = match.group(1).lower()
+                
+                # Extract variables from parameter list
+                if match.group(2):
+                    variables = re.findall(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', match.group(2))
+                    result['variables'] = ['$' + v for v in variables]
+                
+                # Extract top-level fields and aliases
+                result['fieldsSelected'] = self._extract_fields(text)
+                result['aliases'] = self._extract_aliases(text)
+                
+                log.debug('[GraphQL Client] Parsed as anonymous ' + result['type'])
+                log.debug('[GraphQL Client]   - Variables: ' + str(result['variables']))
+                log.debug('[GraphQL Client]   - Fields: ' + str(result['fieldsSelected']))
+                log.debug('[GraphQL Client]   - Aliases: ' + str(result['aliases']))
+                
+                return result
             
-            # Pattern for implicit query (no 'query' keyword): { field ...
-            implicit_pattern = r'^\s*\{\s*([a-z][A-Za-z0-9_]*)'
-            match = re.search(implicit_pattern, text)
-            
-            if match:
-                return {
-                    'operation_type': 'query',
-                    'operation_name': None,
-                    'field_name': match.group(1)
-                }
-            
-            log.debug('[GraphQL Client] Could not parse GraphQL operation: ' + text[:50])
+            log.warning('[GraphQL Client] Could not parse GraphQL operation')
             return None
             
         except Exception as e:
-            log.debug('[GraphQL Client] Error parsing GraphQL operation: ' + str(e))
+            log.warning('[GraphQL Client] Error parsing operation: ' + str(e))
+            log.debug('[GraphQL Client] ' + traceback.format_exc())
             return None
     
-    def _create_client_object(self, hook_type, operation_info, parent_kb_object, graphql_call, jscontent):
+    def _extract_fields(self, graphql_text):
         """
-        Create a CAST custom object for a GraphQL client operation.
+        Extract top-level fields (flat, no nesting).
         
-        Creates objects like:
-        - GraphQLClientQuery for useQuery calls
-        - GraphQLClientMutation for useMutation calls
+        Handles:
+        - Regular fields: users { id }
+        - Aliased fields: mainUser: user { id }
         
-        And creates a CALL link from the parent JS function to this object.
-        
-        Args:
-            hook_type (str): 'useQuery' or 'useMutation'
-            operation_info (dict): Parsed operation metadata
-            parent_kb_object: KB object of the parent function
-            graphql_call: AST node of the useQuery/useMutation call
-            jscontent: JavaScript AST object for file context
+        Returns only the real field names, not the aliases.
+        Aliases are stored separately by _extract_aliases().
         """
         try:
-            # Determine object type
-            if hook_type == 'useQuery':
-                object_type = 'GraphQLClientQuery'
-            elif hook_type == 'useMutation':
-                object_type = 'GraphQLClientMutation'
-            else:
-                log.warning('[GraphQL Client] Unknown hook type: ' + hook_type)
-                return
+            # Find the first { ... } block (operation body)
+            match = re.search(r'\{([^}]+)\}', graphql_text)
+            if not match:
+                log.debug('[GraphQL Client] No fields block found')
+                return []
             
-            # Build name: "query:fieldName" or "mutation:fieldName"
-            operation_name = operation_info['operation_type'] + ':' + operation_info['field_name']
+            content = match.group(1)
+            log.debug('[GraphQL Client] Fields block content: ' + content[:100])
             
-            # Build fullname using parent's fullname
-            parent_fullname = parent_kb_object.get_fullname() if hasattr(parent_kb_object, 'get_fullname') else str(parent_kb_object)
-            fullname = parent_fullname + '/' + operation_name
+            # Extract aliases first to avoid duplicates
+            alias_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+            aliases = re.findall(alias_pattern, content)
+            aliased_names = {alias for alias, field in aliases}
             
-            log.info('[GraphQL Client] Creating ' + object_type + ': ' + operation_name)
-            log.info('[GraphQL Client] Fullname: ' + fullname)
+            # Extract field names (followed by { or ()
+            field_pattern = r'\b([a-z][a-zA-Z0-9_]*)\s*[{\(]'
+            fields = re.findall(field_pattern, content)
             
-            # Create custom object with parent function as parent
-            client_obj = CustomObject()
-            client_obj.set_type(object_type)
-            client_obj.set_parent(parent_kb_object)
-            client_obj.set_fullname(fullname)
-            client_obj.set_name(operation_name)
+            # Build result: regular fields + real field names from aliases
+            result = []
+            for field in fields:
+                if field not in aliased_names:  # Skip alias names, keep field names
+                    result.append(field)
             
-            # Save object
-            client_obj.save()
-            log.info('[GraphQL Client] Object saved successfully')
+            # Add the real field names from aliases
+            for alias, field in aliases:
+                result.append(field)
             
-            # Create bookmark for source navigation
-            bookmark = None
-            try:
-                file = jscontent.get_file()
-                bookmark = graphql_call.create_bookmark(file)
-                client_obj.save_position(bookmark)
-                log.debug('[GraphQL Client] Bookmark saved')
-            except Exception as e:
-                log.debug('[GraphQL Client] Could not create bookmark: ' + str(e))
+            # Remove duplicates
+            result = list(set(result))
             
-            # Create CALL link from parent function to this client object
-            try:
-                if bookmark:
-                    create_link('callLink', parent_kb_object, client_obj, bookmark)
-                else:
-                    create_link('callLink', parent_kb_object, client_obj)
-                log.info('[GraphQL Client] Created CALL link from function to ' + operation_name)
-            except Exception as e:
-                log.warning('[GraphQL Client] Could not create CALL link: ' + str(e))
+            log.debug('[GraphQL Client] Extracted fields: ' + str(result))
+            log.debug('[GraphQL Client] Excluded aliases: ' + str(aliased_names))
             
-            log.info('[GraphQL Client] SUCCESS: Created ' + object_type + ': ' + operation_name)
+            return result
             
         except Exception as e:
-            log.warning('[GraphQL Client] Error creating client object: ' + str(e))
-            log.debug('[GraphQL Client] ' + traceback.format_exc())
+            log.debug('[GraphQL Client] Error extracting fields: ' + str(e))
+            return []
+    
+    def _extract_aliases(self, graphql_text):
+        """
+        Extract field aliases.
+        
+        Example:
+            mainUser: user(id: 1) { ... }
+            
+        Returns:
+            {'mainUser': 'user'}
+        """
+        try:
+            # Pattern: alias: field followed by ( or {
+            alias_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[\(\{]'
+            matches = re.findall(alias_pattern, graphql_text)
+            
+            aliases = {alias: field for alias, field in matches}
+            
+            if aliases:
+                log.debug('[GraphQL Client] Extracted aliases: ' + str(aliases))
+            
+            return aliases
+            
+        except Exception as e:
+            log.debug('[GraphQL Client] Error extracting aliases: ' + str(e))
+            return {}
+
+    def finish(self):
+        """
+        Called at the very end of the analysis.
+        Clean up caches and temporary data.
+        """
+        log.info('[GraphQL Client] === FINISH: Cleaning up caches ===')
+        log.info('[GraphQL Client] Processed ' + str(len(self.graphql_jscontent)) + ' files total')
+        log.info('[GraphQL Client] Created ' + str(len(self.gql_definitions)) + ' gql definitions')
+        log.info('[GraphQL Client] Definition keys: ' + str(list(self.gql_definitions.keys())))
+        
+        self.graphql_jscontent = []
+        self.gql_definitions = {}
+        
+        log.info('[GraphQL Client] === FINISH: Cleanup complete ===')

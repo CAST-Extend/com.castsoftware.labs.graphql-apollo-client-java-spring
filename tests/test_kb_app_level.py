@@ -64,33 +64,64 @@ class TestLocalKb(unittest.TestCase):
         kb = server.get_schema('graphqllinktest1_local')
         application = kb.get_application('GraphQLlinkTest1')
         print("type(app) = {}".format(type(application)))
-        jv_methods = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'JV_METHOD')
-        jv_class = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'JV_CLASS')
+        clientqueries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientQuery')
+        clientmutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientMutation')
+        queryrequests = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLQueryRequest')
+        mutationrequests = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLMutationRequest')
 
-        print(jv_methods)
-
+        # print(clientqueries)
+        # print(clientmutations)
+        query = clientqueries[0]
+        mutation = clientmutations[0]
+        queryrequest= queryrequests[0]
+        mutationrequest= mutationrequests[0]
         # Fetch CAST_Java_AnnotationMetrics.Annotation for each method
-        for idx, method in enumerate(jv_methods, start=1):
-            print("\n=== Method {} ===".format(idx))
-            print("Name: {}".format(method.get_fullname()))
+        print("\n=== GraphQLClientQuery ===")
+        for idx, request in enumerate(clientqueries, start=1):
+            print("\n=== ClientQuery {} ===".format(idx))
+            print("Name: {}".format(request.get_name()))
 
             # To get all properties for debugging:
-            # self.debug_print_all_object_properties(method)
+            self.debug_print_all_object_properties(request)
 
-            try:
-                annotation = method.get_property("CAST_Java_AnnotationMetrics.Annotation")
-                print("  CAST_Java_AnnotationMetrics.Annotation: {}".format(annotation))
-            except Exception as e:
-                print("  CAST_Java_AnnotationMetrics.Annotation: <erreur: {}>".format(e))
-            
-            # Retrieving parent object
-            parent = self.get_parent(method, application)
-            print("  CAST_Java_AnnotationMetrics.Annotation for class: {}".format(parent.get_property("CAST_Java_AnnotationMetrics.Annotation")))
-            
-            if parent:
-                print("  Parent: {} (type: {})".format(parent.get_fullname(), parent.get_type()))
-            else:
-                print("  Parent: <non trouvé>")
+        print("\n=== GraphQLClientMutation ===")
+        for idx, request in enumerate(clientmutations, start=1):
+            print("\n=== ClientMutation {} ===".format(idx))
+            print("Name: {}".format(request.get_name()))
+
+            # To get all properties for debugging:
+            self.debug_print_all_object_properties(request)
+
+        print("\n=== GraphQLQueryRequest ===")
+        for idx, request in enumerate(queryrequests, start=1):
+            print("\n=== QueryRequest {} ===".format(idx))
+            print("Name: {}".format(request.get_name()))
+
+            # To get all properties for debugging:
+            self.debug_print_all_object_properties(request)
+
+        print("\n=== GraphQLMutationRequest ===")
+        for idx, request in enumerate(mutationrequests, start=1):
+            print("\n=== MutationRequest {} ===".format(idx))
+            print("Name: {}".format(request.get_name()))
+
+            # To get all properties for debugging:
+            self.debug_print_all_object_properties(request)
+
+            # try:
+            #     annotation = request.get_property("CAST_Java_AnnotationMetrics.Annotation")
+            #     print("  CAST_Java_AnnotationMetrics.Annotation: {}".format(annotation))
+            # except Exception as e:
+            #     print("  CAST_Java_AnnotationMetrics.Annotation: <erreur: {}>".format(e))
+            #
+            # # Retrieving parent object
+            # parent = self.get_parent(request, application)
+            # print("  CAST_Java_AnnotationMetrics.Annotation for class: {}".format(parent.get_property("CAST_Java_AnnotationMetrics.Annotation")))
+            #
+            # if parent:
+            #     print("  Parent: {} (type: {})".format(parent.get_fullname(), parent.get_type()))
+            # else:
+            #     print("  Parent: <non trouvé>")
 
         # obj_wicket_1 = list(application.search_objects(name='goToHomePage', category="CAST_Wicket_EventHandler",
         #                                                load_properties=True))[0]

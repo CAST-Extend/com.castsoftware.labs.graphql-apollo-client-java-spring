@@ -10,13 +10,58 @@
 		<inheritedCategory name="UniversalLanguage"/>
 		<inheritedCategory name="CsvLanguage"/>
 	</category>
-	<category name="GraphQL Artifacts" rid="1">
+	<category name="GraphQL_Artifacts" rid="1">
 		<description>GraphQL Artifacts</description>
 		<inheritedCategory name="APM Client Language Artifacts"/>
 	</category>
-	<category name="GraphQL Module" rid="2">
+	<category name="GraphQL_Module" rid="2">
 		<description>GraphQL Module category</description>
 		<inheritedCategory name="APM Client Modules"/>
+	</category>
+	<!-- Category for client-side GraphQL operations (LEVEL 1: gql definitions) -->
+	<category name="GraphQL_Client_Definition" rid="29">
+		<description>GraphQL client-side operation definitions</description>
+		
+		<property name="operationName" type="string" rid="100">
+			<description>GraphQL operation name</description>
+			<attribute name="INF_TYPE" intValue="2150100"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="rawQueryText" type="string" rid="101">
+			<description>Raw GraphQL query text</description>
+			<attribute name="INF_TYPE" intValue="2150101"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="variables" type="string" rid="102">
+			<description>GraphQL variables</description>
+			<attribute name="INF_TYPE" intValue="2150102"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="fieldsSelected" type="string" rid="103">
+			<description>Fields selected</description>
+			<attribute name="INF_TYPE" intValue="2150103"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+	</category>
+	<!-- Category for Apollo hook requests (LEVEL 2: hook usage) -->
+	<category name="GraphQL_Hook_Request" rid="30">
+		<description>Apollo Client hook requests</description>
+		
+		<property name="hookType" type="string" rid="104">
+			<description>Apollo hook type</description>
+			<attribute name="INF_TYPE" intValue="2150104"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="fetchPolicy" type="string" rid="105">
+			<description>Apollo fetch policy</description>
+			<attribute name="INF_TYPE" intValue="2150105"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="errorPolicy" type="string" rid="106">
+			<description>Apollo error policy</description>
+			<attribute name="INF_TYPE" intValue="2150106"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
 	</category>
 	<!-- ========================================================= -->
 	<!--       TYPES                                               -->
@@ -30,152 +75,195 @@
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="METRICABLE"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<attribute name="AUTO_FOLDER_THRESHOLD" intValue="1"/>
 		<tree parent="EnlightenGraphQL" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLSchema" rid="5">
 		<description>GraphQL Schema</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="EnlightenGraphQL" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLType" rid="6">
 		<description>GraphQL Type</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLInterface" rid="7">
 		<description>GraphQL Interface</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLEnum" rid="8">
 		<description>GraphQL Enumeration</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLEnumValue" rid="9">
 		<description>GraphQL EnumValue</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<tree parent="GraphQLEnum" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLInput" rid="10">
 		<description>GraphQL Input</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLUnion" rid="11">
 		<description>GraphQL Union</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLScalar" rid="12">
 		<description>GraphQL Scalar</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLDirective" rid="13">
 		<description>GraphQL Directive</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLField" rid="14">
 		<description>Field in a GraphQL Class</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<tree parent="GraphQLType" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLArgument" rid="15">
 		<description>GraphQL Argument</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<tree parent="GraphQLType" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLQuery" rid="16">
 		<description>GraphQL Query</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLMutation" rid="17">
 		<description>GraphQL Mutation</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLSubscription" rid="18">
 		<description>GraphQL Subscription</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLFragment" rid="19">
 		<description>GraphQL Fragment</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLVariable" rid="20">
 		<description>GraphQL Variable</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
-	<!-- GraphQL Client Operations -->
+	<!-- GraphQL Client Operations - LEVEL 1: gql definitions -->
 	<!-- Note: These objects have JavaScript/React parents, not GraphQL parents -->
 	<!-- So we don't declare a tree parent to avoid Enlighten tree errors -->
 	<type name="GraphQLClientQuery" rid="21">
-		<description>GraphQL Client Query</description>
+		<description>GraphQL Client Query Definition</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
 	<type name="GraphQLClientMutation" rid="22">
-		<description>GraphQL Client Mutation</description>
+		<description>GraphQL Client Mutation Definition</description>
 		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL Artifacts"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Client_Definition"/>
+	</type>
+	<type name="GraphQLClientSubscription" rid="24">
+		<description>GraphQL Client Subscription Definition</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Client_Definition"/>
+	</type>
+	<!-- GraphQL Apollo Hook Requests - LEVEL 2: hook usage -->
+	<type name="GraphQLQueryRequest" rid="25">
+		<description>Apollo useQuery Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
+	</type>
+	<type name="GraphQLLazyQueryRequest" rid="26">
+		<description>Apollo useLazyQuery Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
+	</type>
+	<type name="GraphQLMutationRequest" rid="27">
+		<description>Apollo useMutation Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
+	</type>
+	<type name="GraphQLSubscriptionRequest" rid="28">
+		<description>Apollo useSubscription Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
 	<!-- GraphQL project -->
 	<type name="GraphQLProject" rid="23">
 		<description>GraphQL Project</description>
 		<inheritedCategory name="UAProject"/>
 		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL Module"/>
+		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 </metaModel>

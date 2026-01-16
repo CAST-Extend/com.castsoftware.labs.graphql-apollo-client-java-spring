@@ -117,175 +117,98 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
     
     def _link_client_to_schema(self, application):
         """
-        Create USE links between GraphQL client operations and schema objects.
+        Create USE links between GraphQL client definitions and schema fields.
         
-        Finds all GraphQLClientQuery and GraphQLClientMutation objects,
-        then links them to corresponding GraphQLQuery and GraphQLMutation
-        objects from the schema.
-        
-        Args:
-            application: CAST Application object
+        Links GraphQLClientQuery/Mutation/Subscription objects to GraphQLField objects.
         """
         info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] Starting link creation process')
+        info('[GraphQL Application] Starting client-to-schema linking')
         info('[GraphQL Application] ========================================')
         
-        # Find all client operations using get_objects() and filtering by type
-        # get_objects() returns Object instances, get_type() returns the type name
-        debug('[GraphQL Application] Searching for client operations...')
         client_queries = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientQuery']
         client_mutations = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientMutation']
+        client_subscriptions = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLClientSubscription']
         
         info('[GraphQL Application] Found ' + str(len(client_queries)) + ' GraphQLClientQuery objects')
-        for obj in client_queries:
-            debug('[GraphQL Application]   - Client Query: "' + obj.get_name() + '" (fullname: ' + str(obj.get_fullname()) + ')')
-        
         info('[GraphQL Application] Found ' + str(len(client_mutations)) + ' GraphQLClientMutation objects')
-        for obj in client_mutations:
-            debug('[GraphQL Application]   - Client Mutation: "' + obj.get_name() + '" (fullname: ' + str(obj.get_fullname()) + ')')
+        info('[GraphQL Application] Found ' + str(len(client_subscriptions)) + ' GraphQLClientSubscription objects')
         
-        total_clients = len(client_queries) + len(client_mutations)
+        total_clients = len(client_queries) + len(client_mutations) + len(client_subscriptions)
         if total_clients == 0:
-            warning('[GraphQL Application] No client operations found - nothing to link')
+            warning('[GraphQL Application] No client definitions found')
             return
         
-        # Build index of schema objects for faster lookup
-        # In GraphQL schema, Query and Mutation are GraphQLType objects
-        # Their fields (user, users, createUser) are GraphQLField objects that are children
         info('[GraphQL Application] Building schema field index...')
         schema_queries = {}
         schema_mutations = {}
+        schema_subscriptions = {}
         
-        # Find Query and Mutation types, then load their field children
-        # Filter by type name using get_type()
         graphql_types = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLType']
-        debug('[GraphQL Application] Found ' + str(len(graphql_types)) + ' GraphQLType objects')
         
         for type_obj in graphql_types:
             type_name = type_obj.get_name()
-            debug('[GraphQL Application]   - Processing GraphQLType: "' + type_name + '"')
             
             if type_name == 'Query':
-                info('[GraphQL Application] Found Query type: ' + str(type_obj.get_fullname()))
-                # Load all children then filter by type
                 type_obj.load_children()
-                children = type_obj.get_children()
-                debug('[GraphQL Application]   - Query type has ' + str(len(children)) + ' children')
-                
-                for field_obj in children:
+                for field_obj in type_obj.get_children():
                     if field_obj.get_type() == 'GraphQLField':
-                        field_name = field_obj.get_name()
-                        schema_queries[field_name] = field_obj
-                        info('[GraphQL Application]   - Indexed query field: "' + field_name + '" (fullname: ' + str(field_obj.get_fullname()) + ')')
-                    else:
-                        debug('[GraphQL Application]   - Skipping non-field child: ' + field_obj.get_type())
-                    
+                        schema_queries[field_obj.get_name()] = field_obj
+                        
             elif type_name == 'Mutation':
-                info('[GraphQL Application] Found Mutation type: ' + str(type_obj.get_fullname()))
-                # Load all children then filter by type
                 type_obj.load_children()
-                children = type_obj.get_children()
-                debug('[GraphQL Application]   - Mutation type has ' + str(len(children)) + ' children')
-                
-                for field_obj in children:
+                for field_obj in type_obj.get_children():
                     if field_obj.get_type() == 'GraphQLField':
-                        field_name = field_obj.get_name()
-                        schema_mutations[field_name] = field_obj
-                        info('[GraphQL Application]   - Indexed mutation field: "' + field_name + '" (fullname: ' + str(field_obj.get_fullname()) + ')')
-                    else:
-                        debug('[GraphQL Application]   - Skipping non-field child: ' + field_obj.get_type())
+                        schema_mutations[field_obj.get_name()] = field_obj
+                        
+            elif type_name == 'Subscription':
+                type_obj.load_children()
+                for field_obj in type_obj.get_children():
+                    if field_obj.get_type() == 'GraphQLField':
+                        schema_subscriptions[field_obj.get_name()] = field_obj
         
-        info('[GraphQL Application] Schema index complete: ' + str(len(schema_queries)) + 
-                ' query fields, ' + str(len(schema_mutations)) + ' mutation fields')
+        info('[GraphQL Application] Schema index: ' + str(len(schema_queries)) + ' queries, ' + 
+             str(len(schema_mutations)) + ' mutations, ' + str(len(schema_subscriptions)) + ' subscriptions')
         
-        info('[GraphQL Application] ----------------------------------------')
-        info('[GraphQL Application] Creating USE links for queries...')
-        info('[GraphQL Application] ----------------------------------------')
-        
-        # Link client queries to schema queries
-        # Object names are in format "query:fieldName" - we parse to extract fieldName
         links_created = 0
-        queries_matched = 0
-        queries_not_matched = 0
         
         for client_obj in client_queries:
-            try:
-                obj_name = client_obj.get_name()
-                debug('[GraphQL Application] Processing client query: "' + obj_name + '"')
-                
-                # Parse "query:fieldName" to get fieldName
-                if ':' in obj_name:
-                    field_name = obj_name.split(':')[1]
-                    debug('[GraphQL Application]   - Extracted field name: "' + field_name + '"')
-                else:
-                    field_name = obj_name
-                    debug('[GraphQL Application]   - Using full name as field: "' + field_name + '"')
-                
-                if field_name and field_name in schema_queries:
-                    schema_obj = schema_queries[field_name]
-                    info('[GraphQL Application] >>> CREATING LINK: useLink')
-                    info('[GraphQL Application]     FROM (client): ' + str(client_obj.get_fullname()) + ' [' + client_obj.get_type() + ']')
-                    info('[GraphQL Application]     TO (schema):   ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
-                    create_link('useLink', client_obj, schema_obj)
-                    links_created += 1
-                    queries_matched += 1
-                else:
-                    warning('[GraphQL Application] !!! NO MATCH FOUND for client query field: "' + str(field_name) + '"')
-                    warning('[GraphQL Application]     Client object: ' + str(client_obj.get_fullname()))
-                    warning('[GraphQL Application]     Available schema queries: ' + str(list(schema_queries.keys())))
-                    queries_not_matched += 1
-            except Exception as e:
-                warning('[GraphQL Application] !!! ERROR linking query "' + client_obj.get_name() + '": ' + str(e))
-                debug('[GraphQL Application] ' + traceback.format_exc())
-        
-        info('[GraphQL Application] Query linking complete: ' + str(queries_matched) + ' matched, ' + str(queries_not_matched) + ' not matched')
-        
-        info('[GraphQL Application] ----------------------------------------')
-        info('[GraphQL Application] Creating USE links for mutations...')
-        info('[GraphQL Application] ----------------------------------------')
-        
-        # Link client mutations to schema mutations
-        # Object names are in format "mutation:fieldName" - we parse to extract fieldName
-        mutations_matched = 0
-        mutations_not_matched = 0
+            links_created += self._link_client_to_fields(client_obj, schema_queries, 'Query')
         
         for client_obj in client_mutations:
-            try:
-                obj_name = client_obj.get_name()
-                debug('[GraphQL Application] Processing client mutation: "' + obj_name + '"')
-                
-                # Parse "mutation:fieldName" to get fieldName
-                if ':' in obj_name:
-                    field_name = obj_name.split(':')[1]
-                    debug('[GraphQL Application]   - Extracted field name: "' + field_name + '"')
-                else:
-                    field_name = obj_name
-                    debug('[GraphQL Application]   - Using full name as field: "' + field_name + '"')
-                
-                if field_name and field_name in schema_mutations:
-                    schema_obj = schema_mutations[field_name]
-                    info('[GraphQL Application] >>> CREATING LINK: useLink')
-                    info('[GraphQL Application]     FROM (client): ' + str(client_obj.get_fullname()) + ' [' + client_obj.get_type() + ']')
-                    info('[GraphQL Application]     TO (schema):   ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+            links_created += self._link_client_to_fields(client_obj, schema_mutations, 'Mutation')
+        
+        for client_obj in client_subscriptions:
+            links_created += self._link_client_to_fields(client_obj, schema_subscriptions, 'Subscription')
+        
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] Created ' + str(links_created) + ' USE links total')
+        info('[GraphQL Application] ========================================')
+    
+    def _link_client_to_fields(self, client_obj, schema_fields, operation_type):
+        """Link a client object to schema fields based on fieldsSelected property."""
+        links_created = 0
+        
+        try:
+            fields_selected = client_obj.get_property('fieldsSelected')
+            if not fields_selected:
+                warning('[GraphQL Application] No fieldsSelected for ' + client_obj.get_name())
+                return 0
+            
+            for field_name in fields_selected:
+                if field_name in schema_fields:
+                    schema_obj = schema_fields[field_name]
+                    info('[GraphQL Application] >>> LINK: ' + client_obj.get_name() + ' -> ' + 
+                         operation_type + '.' + field_name)
                     create_link('useLink', client_obj, schema_obj)
                     links_created += 1
-                    mutations_matched += 1
                 else:
-                    warning('[GraphQL Application] !!! NO MATCH FOUND for client mutation field: "' + str(field_name) + '"')
-                    warning('[GraphQL Application]     Client object: ' + str(client_obj.get_fullname()))
-                    warning('[GraphQL Application]     Available schema mutations: ' + str(list(schema_mutations.keys())))
-                    mutations_not_matched += 1
-            except Exception as e:
-                warning('[GraphQL Application] !!! ERROR linking mutation "' + client_obj.get_name() + '": ' + str(e))
-                debug('[GraphQL Application] ' + traceback.format_exc())
+                    warning('[GraphQL Application] Field not found: ' + field_name)
         
-        info('[GraphQL Application] Mutation linking complete: ' + str(mutations_matched) + ' matched, ' + str(mutations_not_matched) + ' not matched')
+        except Exception as e:
+            warning('[GraphQL Application] Error linking: ' + str(e))
+            debug(traceback.format_exc())
         
-        info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] SUMMARY: Created ' + str(links_created) + ' USE links total')
-        info('[GraphQL Application]   - Queries:   ' + str(queries_matched) + ' linked, ' + str(queries_not_matched) + ' unmatched')
-        info('[GraphQL Application]   - Mutations: ' + str(mutations_matched) + ' linked, ' + str(mutations_not_matched) + ' unmatched')
-        info('[GraphQL Application] ========================================')
+        return links_created
 
     def _link_backend_to_schema(self, application):
         """
