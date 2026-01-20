@@ -61,20 +61,23 @@ class TestLocalKb(unittest.TestCase):
         print("engine = {}".format(engine))
         server = Server(engine)
         print("server = {}".format(server))
-        kb = server.get_schema('graphqllinktest1_local')
-        application = kb.get_application('GraphQLlinkTest1')
+        kb = server.get_schema('largegraphqlapp_local')
+        application = kb.get_application('LargeGraphQLApp')
         print("type(app) = {}".format(type(application)))
         clientqueries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientQuery')
         clientmutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientMutation')
         queryrequests = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLQueryRequest')
         mutationrequests = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLMutationRequest')
+        reactJSFunctionComponents = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'CAST_ReactJS_Function_Component')
+
 
         # print(clientqueries)
         # print(clientmutations)
-        query = clientqueries[0]
-        mutation = clientmutations[0]
-        queryrequest= queryrequests[0]
-        mutationrequest= mutationrequests[0]
+        # query = clientqueries[0]
+        # mutation = clientmutations[0]
+        # queryrequest = queryrequests[0]
+        # mutationrequest = mutationrequests[0]
+        # reactJSFunctionComponent = reactJSFunctionComponents[0]
         # Fetch CAST_Java_AnnotationMetrics.Annotation for each method
         print("\n=== GraphQLClientQuery ===")
         for idx, request in enumerate(clientqueries, start=1):

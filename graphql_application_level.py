@@ -344,11 +344,11 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                     
                     if has_query_mapping:
                         schema_obj = schema_queries[method_name]
-                        info('[GraphQL Application] >>> CREATING LINK: relyonLink')
-                        info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
-                        info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                        info('[GraphQL Application] >>> CREATING LINK: callLink')
+                        info('[GraphQL Application]     FROM (schema):  ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                        info('[GraphQL Application]     TO (backend):   ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
                         info('[GraphQL Application]     ANNOTATION: ' + str([ann for ann in annotations if '@QueryMapping' in str(ann)]))
-                        create_link('relyonLink', java_method, schema_obj)
+                        create_link('callLink', schema_obj, java_method)
                         links_created += 1
                         queries_matched += 1
                     else:
@@ -361,11 +361,11 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                     
                     if has_mutation_mapping:
                         schema_obj = schema_mutations[method_name]
-                        info('[GraphQL Application] >>> CREATING LINK: relyonLink')
-                        info('[GraphQL Application]     FROM (backend): ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
-                        info('[GraphQL Application]     TO (schema):    ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                        info('[GraphQL Application] >>> CREATING LINK: callLink')
+                        info('[GraphQL Application]     FROM (schema):  ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                        info('[GraphQL Application]     TO (backend):   ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
                         info('[GraphQL Application]     ANNOTATION: ' + str([ann for ann in annotations if '@MutationMapping' in str(ann)]))
-                        create_link('relyonLink', java_method, schema_obj)
+                        create_link('callLink', schema_obj, java_method)
                         links_created += 1
                         mutations_matched += 1
                     else:
@@ -381,7 +381,7 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                 debug('[GraphQL Application] ' + traceback.format_exc())
         
         info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' RELY ON links')
+        info('[GraphQL Application] BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' CALL links')
         info('[GraphQL Application]   - Query methods:    ' + str(queries_matched) + ' linked')
         info('[GraphQL Application]   - Mutation methods: ' + str(mutations_matched) + ' linked')
         info('[GraphQL Application]   - Not matched:      ' + str(not_matched) + ' (expected - most Java methods are not GraphQL resolvers)')
