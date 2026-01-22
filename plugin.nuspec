@@ -11,7 +11,7 @@
     <iconUrl>https://raw.githubusercontent.com/CAST-Extend/com.castsoftware.labs.graphql-apollo-client-java-spring/refs/heads/main/com.castsoftware.labs.graphql-apollo-client-java-spring.png</iconUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>This extension supports JS Apollo communicating with Java Spring through GraphQL. Creates 3 link types: direct CALL link from JS to Java, USE link from JS to GraphQL schema, and CALL link from GraphQL schema to Java for complete full-stack transaction analysis</description>
-    <releaseNotes></releaseNotes>
+    <releaseNotes>https://github.com/CAST-Extend/com.castsoftware.labs.graphql-apollo-client-java-spring/blob/main/README.md#release-notes</releaseNotes>
     <tags>GraphQL API Schema Query Mutation Subscription React Apollo Client useQuery useMutation</tags>
     <dependencies>
       <dependency id="CAIP" version="8.3.3" />
