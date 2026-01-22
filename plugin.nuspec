@@ -6,7 +6,7 @@
     <title>GraphQL for Apollo JS and Java Spring</title>
     <authors>CAST</authors>
     <owners>CAST</owners>
-    <licenseUrl>http://www.castsoftware.com/ps/doc/extension/license</licenseUrl>
+    <licenseUrl>https://raw.githubusercontent.com/CAST-Extend/com.castsoftware.labs.graphql-apollo-client-java-spring/main/licenses/COPYING.LESSER.txt</licenseUrl>
     <projectUrl>https://example.com/project</projectUrl>
     <iconUrl>https://example.com/icon.png</iconUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
