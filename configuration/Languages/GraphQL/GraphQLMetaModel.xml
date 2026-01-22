@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<metaModel file_level="client" file_no="150">
-	<!-- ID range is 2150000 to 2150999 -->
+<metaModel file_level="client" file_no="135">
+	<!-- ID range is 2135000 to 2135999 -->
 	<!-- ========================================================= -->
 	<!--       CATEGORIES                                           -->
 	<!-- ========================================================= -->
@@ -24,22 +24,22 @@
 		
 		<property name="operationName" type="string" rid="100">
 			<description>GraphQL operation name</description>
-			<attribute name="INF_TYPE" intValue="2150100"/>
+			<attribute name="INF_TYPE" intValue="2135100"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 		<property name="rawQueryText" type="string" rid="101">
 			<description>Raw GraphQL query text</description>
-			<attribute name="INF_TYPE" intValue="2150101"/>
+			<attribute name="INF_TYPE" intValue="2135101"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 		<property name="variables" type="string" rid="102">
 			<description>GraphQL variables</description>
-			<attribute name="INF_TYPE" intValue="2150102"/>
+			<attribute name="INF_TYPE" intValue="2135102"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 		<property name="fieldsSelected" type="string" rid="103">
 			<description>Fields selected</description>
-			<attribute name="INF_TYPE" intValue="2150103"/>
+			<attribute name="INF_TYPE" intValue="2135103"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 	</category>
@@ -49,17 +49,17 @@
 		
 		<property name="hookType" type="string" rid="104">
 			<description>Apollo hook type</description>
-			<attribute name="INF_TYPE" intValue="2150104"/>
+			<attribute name="INF_TYPE" intValue="2135104"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 		<property name="fetchPolicy" type="string" rid="105">
 			<description>Apollo fetch policy</description>
-			<attribute name="INF_TYPE" intValue="2150105"/>
+			<attribute name="INF_TYPE" intValue="2135105"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 		<property name="errorPolicy" type="string" rid="106">
 			<description>Apollo error policy</description>
-			<attribute name="INF_TYPE" intValue="2150106"/>
+			<attribute name="INF_TYPE" intValue="2135106"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 	</category>
