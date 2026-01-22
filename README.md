@@ -1,8 +1,8 @@
 # GraphQL Universal Analyzer Extension
 
-**Version:** 1.0.6  
+**Version:** 1.0.0  
 **Author:** CAST  
-**Namespace:** uc
+**Namespace:** labs
 
 ---
 
@@ -14,7 +14,7 @@ This CAST Universal Analyzer extension provides automated analysis of **GraphQL*
 
 - ✅ **Schema Object Detection**: Extracts GraphQL types, queries, mutations from schema files
 - ✅ **Client-Side Linking**: Links React/Apollo Client code to GraphQL schema objects
-- ✅ **Full-Stack Transactions**: Enables end-to-end transaction analysis from UI to GraphQL operations
+- ✅ **Backend Linking**: Links GraphQL schema fields to Java backend methods (resolvers)
 - ✅ **Smart Resolution**: Uses intelligent heuristics to match client operations to schema definitions
 
 ### Supported File Extensions
@@ -28,168 +28,215 @@ This CAST Universal Analyzer extension provides automated analysis of **GraphQL*
 
 This extension detects and analyzes the following GraphQL constructs:
 
+### Schema Objects (from .graphql/.gql/.graphqls files)
 - **Program**: Top-level program definitions
 - **Schema**: Top-level schema definitions
-- **Type**: Type within Schema
-- **Interface**: Interface within Schema
-- **Enum**: Enum within Schema
-- **EnumValue**: EnumValue within Enum
-- **Input**: Input within Schema
-- **Union**: Union within Schema
-- **Scalar**: Scalar within Schema
-- **Directive**: Directive within Schema
-- **Field**: Field within Type
+- **Type**: Type definitions within Schema
+- **Interface**: Interface definitions within Schema
+- **Enum**: Enumeration definitions within Schema
+- **EnumValue**: Enumeration value within Enum
+- **Input**: Input type definitions within Schema
+- **Union**: Union type definitions within Schema
+- **Scalar**: Scalar type definitions within Schema
+- **Directive**: Directive definitions within Schema
+- **Field**: Field within Type, Interface, Query, Mutation, or Subscription
 - **Argument**: Argument within Field
-- **Query**: Query within Schema
-- **Mutation**: Mutation within Schema
-- **Subscription**: Subscription within Schema
-- **Fragment**: Fragment within Schema
-- **Variable**: Variable within Query
+- **Query**: Query operation definitions within Schema
+- **Mutation**: Mutation operation definitions within Schema
+- **Subscription**: Subscription operation definitions within Schema
+- **Fragment**: Fragment definitions within Schema
+- **Variable**: Variable definitions within operations
 
-### Client-Side Objects (NEW in v1.0.6)
+### Client-Side Objects (from React/JavaScript code)
 
-The extension also creates custom objects for GraphQL operations in React/JavaScript code:
+#### Request Objects (Apollo Hook Calls)
+- **GraphQLQueryRequest**: Apollo `useQuery()` hook call
+- **GraphQLLazyQueryRequest**: Apollo `useLazyQuery()` hook call
+- **GraphQLMutationRequest**: Apollo `useMutation()` hook call
+- **GraphQLSubscriptionRequest**: Apollo `useSubscription()` hook call
 
-- **CAST_GraphQL_ClientQuery**: Represents a `useQuery()` hook call
-- **CAST_GraphQL_ClientMutation**: Represents a `useMutation()` hook call
-
-These objects are created as children of JavaScript functions and linked to the corresponding GraphQL schema objects.
-
-**Example hierarchy in Imaging:**
-```
-App.jsx
-└── Function: App
-    ├── CAST_GraphQL_ClientQuery "query:users"
-    │   └── USE link → GraphQLQuery "users" (from schema.graphqls)
-    └── CAST_GraphQL_ClientMutation "mutation:createUser"
-        └── USE link → GraphQLMutation "createUser" (from schema.graphqls)
-```
+#### Client Definition Objects (gql Templates)
+- **GraphQLClientQuery**: Client-side query definition (gql template)
+- **GraphQLClientMutation**: Client-side mutation definition (gql template)
+- **GraphQLClientSubscription**: Client-side subscription definition (gql template)
 
 ---
 
-## Client-Side GraphQL Detection
+## GraphQL Architecture
 
-### Supported Patterns
+This extension creates a complete end-to-end analysis chain from React frontend to GraphQL schema to Java backend.
 
-The extension detects Apollo Client GraphQL operations in React code:
+### Complete Code Example
 
-| Pattern | Example | Detection |
-|---------|---------|-----------|
-| **useQuery hook** | `const { data } = useQuery(GET_USERS)` | ✅ Detected |
-| **useMutation hook** | `const [createUser] = useMutation(CREATE_USER)` | ✅ Detected |
-| **gql template literals** | ``const GET_USERS = gql`query GetUsers { users { id } }` `` | ✅ Parsed |
-| **Named operations** | `query GetUsers { ... }` | ✅ Operation name extracted |
-| **Anonymous queries** | `query { users { ... } }` | ✅ Field name extracted |
-
-### How It Works
-
-1. **Event-Driven Architecture**: Listens to HTML5/JavaScript analyzer events
-2. **Two-Pass Analysis**:
-   - Pass 1: Collect all `gql` template literal definitions
-   - Pass 2: Find `useQuery`/`useMutation` calls and resolve variables
-3. **Variable Resolution**: Traces query variable to its `gql` definition
-4. **GraphQL Parsing**: Extracts operation type (query/mutation), name, and field
-5. **Object Creation**: Creates custom client objects as children of JS functions
-6. **Linking**: Creates USE links to existing GraphQL schema objects
-
-### Example
-
-Given this React code:
-
+**Frontend (App.jsx) - React/Apollo Client:**
 ```javascript
-import { gql, useQuery, useMutation } from "@apollo/client";
+import { gql, useQuery } from "@apollo/client";
 
+// gql template definition
 const GET_USERS = gql`
   query GetUsers {
     users { id name email }
   }
 `;
 
-const CREATE_USER = gql`
-  mutation CreateUser($input: CreateUserInput!) {
-    createUser(input: $input) { id name }
-  }
-`;
-
 function App() {
+  // Apollo hook call
   const { data } = useQuery(GET_USERS);
-  const [createUser] = useMutation(CREATE_USER);
-  // ...
+  return <div>{/* render users */}</div>;
 }
 ```
 
-The extension creates:
-- `CAST_GraphQL_ClientQuery` object named "query:users" inside function `App`
-- `CAST_GraphQL_ClientMutation` object named "mutation:createUser" inside function `App`
-- USE links from these objects to the corresponding `GraphQLQuery` and `GraphQLMutation` objects in your schema
+**Schema (schema.graphqls) - GraphQL Schema:**
+```graphql
+type Query {
+  users: [User!]!
+}
 
-This enables **end-to-end transaction analysis** from React UI → GraphQL operations → Backend resolvers.
+type User {
+  id: ID!
+  name: String!
+  email: String!
+}
+```
+
+**Backend (UserController.java) - Spring GraphQL:**
+```java
+@Controller
+public class UserController {
+    
+    @QueryMapping
+    public List<User> users() {
+        return userService.findAll();
+    }
+}
+```
+
+### Links Created
+
+```
+JavaScript Function "App" (in App.jsx)
+│
+├─ GraphQLQueryRequest "useQuery:GET_USERS"
+│  │  (Apollo hook call - transforms definition into HTTP request)
+│  │
+│  └─ [USE link]
+│     │
+│     ↓
+│  GraphQLClientQuery "GET_USERS"
+│     (gql template definition - describes data structure to fetch)
+│     │
+│     └─ [USE link]
+│        │
+│        ↓
+│     GraphQLQuery > Field "users"
+│        (schema.graphqls - backend field in Type Query)
+│        │
+│        └─ [CALL link]
+│           │
+│           ↓
+│        JV_METHOD users()
+│           (Java resolver method with @QueryMapping)
+```
+
+### Frontend Objects Created
+
+The extension creates **GraphQL-specific objects** for React/Apollo Client code:
+
+#### 1. Request Objects (Hook Calls)
+- **GraphQLQueryRequest** - Created at `useQuery()` call site
+- **GraphQLLazyQueryRequest** - Created at `useLazyQuery()` call site
+- **GraphQLMutationRequest** - Created at `useMutation()` call site
+- **GraphQLSubscriptionRequest** - Created at `useSubscription()` call site
+
+#### 2. Client Definition Objects (gql Templates)
+- **GraphQLClientQuery** - Created at `gql` query definition
+- **GraphQLClientMutation** - Created at `gql` mutation definition
+- **GraphQLClientSubscription** - Created at `gql` subscription definition
+
+**Why we create these objects:**
+The HTML5/JavaScript analyzer does not support the Apollo Client framework used for GraphQL requests. It also does not create objects for `gql` template definitions. Without these custom GraphQL objects, there would be no way to link JavaScript code to GraphQL schema objects. Our extension bridges this gap by:
+- Creating GraphQL-specific objects (Request and Definition objects) for Apollo hooks and gql templates
+- Linking these custom objects to JavaScript objects created by the HTML5/JavaScript analyzer (e.g., functions, variables)
+- Linking these custom objects to GraphQL schema objects created by our GraphQL schema analyzer
+- Enabling end-to-end transaction analysis from React frontend through schema to Java backend
+
+### Schema Objects Created
+
+From `.graphql`/`.gql`/`.graphqls` files, the extension creates:
+- **GraphQLQuery** - Query type fields (e.g., "users")
+- **GraphQLMutation** - Mutation type fields (e.g., "createUser")
+- **GraphQLSubscription** - Subscription type fields
+- **GraphQLType** - Custom types (e.g., "User")
+- **GraphQLField** - Type fields (e.g., "id", "name", "email")
+- And other schema constructs (Interface, Enum, Input, etc.)
+
+### Backend Objects (Java)
+
+**Important:** The extension does **NOT** create any Java objects. It relies entirely on objects created by the **JEE Analyzer** (JV_METHOD, JV_CLASS, etc.) and creates links between GraphQL schema objects and these existing Java objects.
+
+The linking is done by:
+1. Detecting `@Controller` classes
+2. Finding methods with `@QueryMapping`, `@MutationMapping`, or `@SubscriptionMapping` annotations
+3. Matching method names to GraphQL schema field names
+4. Creating CALL links from GraphQL schema fields to Java methods
+
+### Complete Transaction Flow
+
+**End-to-end analysis example:**
+1. **Frontend**: User clicks button → triggers `useQuery(GET_USERS)` (GraphQLQueryRequest)
+2. **Client Definition**: Request uses `GET_USERS` gql template (GraphQLClientQuery "GetUsers")
+3. **Schema**: Query asks for "users" field from Type Query (GraphQLQuery field "users")
+4. **Backend**: Field resolves to Java method `users()` with @QueryMapping (JV_METHOD)
+5. **Data flow**: Java method fetches data → returns to schema → returns to client → updates UI
+
+This enables **full-stack transaction analysis** in CAST Imaging from React UI → GraphQL operations → Backend resolvers.
 
 ---
 
-## Original Schema Link Detection (Legacy)
+## Link Implementation Details
 
-### What CAN Be Detected ✅
+### 1. Request/Definition → JavaScript Objects
 
-The extension reliably detects and creates links for:
+**Implementation:** `graphql_client_analyzer.py`
 
-| Call Type | Example | Resolution Strategy |
-|-----------|---------|---------------------|
-| **Direct function calls** | `myFunction()` | Same file first, then cross-file if unambiguous |
-| **Self/this calls** | `self.method()`, `this.method()` | Only within the containing class |
-| **Static/Class calls** | `MyClass.staticMethod()` | Exact fullname match |
-| **Same-file calls** | Local function calling another local function | High confidence resolution |
+Client objects (GraphQLQueryRequest, GraphQLClientQuery, etc.) are created as **children** of JavaScript objects. During object creation, links are established to JavaScript objects:
+- **CONTAINMENT** links: Request/Definition objects are children of JS objects
+- **CALL** links: If the parent JS object is a function
+- **USE** links: To JavaScript variables (e.g., linking GraphQLQueryRequest to the GraphQLClientQuery referencing the gql template)
 
-### What CANNOT Be Detected ❌
+This file communicates with the HTML5/JavaScript analyzer using an **event-driven architecture** to:
+- Catch events from the HTML5/JS analyzer
+- Access the JavaScript AST (Abstract Syntax Tree)
+- Create GraphQL client objects
+- Establish containment and reference links to JS objects
 
-Due to the limitations of regex-based parsing without full type inference:
+**Documentation:** For details on the event system, see [CAST HTML5/JavaScript Extension SDK](https://cast-projects.github.io/Extension-SDK/doc/html5.html?highlight=javascript)
 
-| Call Type | Example | Why It Fails |
-|-----------|---------|--------------|
-| **Variable method calls** | `obj.method()` | Unknown variable type (requires static type analysis) |
-| **Dynamic calls** | `getattr(obj, 'method')()` | Method name resolved at runtime |
-| **Polymorphic calls** | `animal.speak()` | Type ambiguity (Dog/Cat/Bird) |
-| **Callback references** | `callback()` where callback is passed as parameter | No reference tracking |
+### 2. Client Definitions → Schema (USE Links)
 
-**Unresolved calls are reported** in the `GraphQL_UnresolvedCalls` report in CAST Imaging.
+**Implementation:** `_link_client_to_schema()` in `graphql_application_level.py`
 
----
+**Matching logic:**
+- Parse the `gql` template to extract the root field being queried (e.g., "users" from `query GetUsers { users { ... } }`)
+- Match this field name to a corresponding GraphQLQuery/GraphQLMutation/GraphQLSubscription object in the schema
+- Create USE link: `GraphQLClientQuery/Mutation/Subscription` → `GraphQLQuery/Mutation/Subscription` field
 
-## Strict Resolution Strategy
+**Example:** Client query "GetUsers" selecting field "users" → links to schema's `Query.users` field
 
-To **avoid false positives**, the extension uses strict resolution rules:
+### 3. Schema → Backend (CALL Links)
 
-### Rule 1: Self/This Calls
-```# Example
-self.helper_method()  # ✅ Resolved within current class only
-```
-- Searches **only** in the containing class
-- High confidence, creates link
+**Implementation:** `_link_schema_to_backend()` in `graphql_application_level.py`
 
-### Rule 2: Variable Calls (SKIPPED)
-```# Example
-obj.method()         # ❌ SKIPPED - type unknown
-list.append(item)    # ❌ SKIPPED - type unknown
-```
-- Cannot determine variable type without static analysis
-- **No link created** (prevents false positives)
-- Logged in Unresolved Calls Report
+**Matching logic:**
+1. Find all Java classes with `@Controller` annotation (JV_CLASS objects from JEE Analyzer)
+2. Find methods with `@QueryMapping`, `@MutationMapping`, or `@SubscriptionMapping` annotations
+3. Match method name to GraphQL field name
+4. Verify annotation type matches operation type (QueryMapping → Query type, etc.)
+5. Create CALL link: `GraphQLQuery/Mutation/Subscription` field → `JV_METHOD`
 
-### Rule 3: Direct Calls
-```# Example
-calculate_total()    # ✅ Resolved if unambiguous
-```
-- Same file preferred
-- Cross-file **only if exactly ONE candidate**
-- Multiple definitions → No link (ambiguous)
+**Example:** Schema field `Query.users` → links to Java method `users()` with `@QueryMapping` in a `@Controller` class
 
-### Rule 4: Qualified Calls
-```# Example
-Math.abs(-5)         # ✅ Resolved by exact match
-MyClass::method()    # ✅ Resolved by exact match
-```
-- Exact fullname lookup
-- High confidence
+**Note:** Currently uses naive name-based matching. See [Backend-to-Schema Linking](#backend-to-schema-linking-future-enhancement) section for planned improvements.
 
 ---
 
@@ -207,7 +254,7 @@ MyClass::method()    # ✅ Resolved by exact match
    plugin-to-nupkg.bat
    ```
 
-2. **Copy the .nupkg file** to the extensions folder:
+2. **Move the .nupkg file** to the extensions folder:
    ```
    C:\Cast\ProgramData\CAST\AIP-Console-Standalone\data\shared\extensions\
    ```
@@ -234,433 +281,31 @@ MyClass::method()    # ✅ Resolved by exact match
    - **Language**: Enter your extension name (e.g., `GraphQL`)
    - Click **Save**
 
-7. **Resume the analysis** (blue button, bottom right of **Overview**).
+7. **Configure entry point for transactions** (to make transactions visible in Imaging):
+   - After creating the Analysis Unit, go to the **Transactions** tab (left sidebar)
+   - This opens a window with three tabs; select **Rules**
+   - Click the **+ADD** button
+   - Name the rule (e.g., `ReactJS Entry Point`)
+   - Activate the toggle **Activation**
+   - Click **UPDATE**
+   - Click on the square object for your new entry point (e.g., `ReactJS Entry Point`)
+   - This opens a page on the right to configure the entry point
+   - Click the large **+** button, then the small **+** button
+   - In the dropdown, select **Property - Identification**
+   - Set **Property** to `type`, **Operator** to `=`, and **Values** to `ReactJS Function Component`
+   - Click **Check Content** to view objects with this property
+   - Click **Save** at the top right of the main page
+   - Your entry point is now configured
+
+8. **Resume the analysis** (blue button, bottom right of **Overview**).
 
 ### Verification
 
 After analysis completes, verify the extension worked:
 - Check Analysis logs for `[GraphQL] Starting GraphQL analysis`
 - Review the Analysis Summary for detected objects and links
-- Check CAST Imaging for the `GraphQL_UnresolvedCalls` report
 
 ---
 
-## Configuration
-
-### Default Settings
-
-The extension is pre-configured with sensible defaults for GraphQL:
-
-- **File Extensions**: `*.graphql`, `*.gql`, `*.graphqls`
-- **Comment Syntax**: `#`
-
-- **Multi-line Comments**: `""" ... """`- **Block Delimiters**: braces
-
-### Customizing Detection Patterns
-
-If you need to adjust what gets detected, you can modify the generated source files:
-
-1. **Edit patterns** in `graphql_module.py`:
-   - Patterns are defined in the `PATTERN_MAPPING` dictionary
-   - Each pattern uses regex with named groups like `(?P<name>\w+)`
-   - Example: Function detection uses patterns from config's `grammar.patterns.function`
-
-2. **Regenerate the .nupkg** by double-clicking:
-   ```
-   plugin-to-nupkg.bat
-   ```
-
-3. **Redeploy** the extension (repeat deployment steps above).
-
----
-
-## Customization
-
-### Adding Custom Object Types
-
-To detect additional code structures:
-
-1. **Edit the configuration** (if regenerating from scratch):
-   ```json
-   "objects": {
-     "YourNewType": {
-       "parent": "Program",
-       "pattern_keys": ["your_pattern"]
-     }
-   }
-   ```
-
-2. **Add detection pattern**:
-   ```python
-   'your_pattern': [r'^\s*your_keyword\s+(?P<name>\w+)']
-   ```
-
-3. **Update MetaModel XML** to include the new type.
-
-### Custom Call Detection
-
-Override `_extract_calls()` in `graphql_module.py`:
-
-```python
-class GraphQLModule(GraphQLModule):
-    def _extract_calls(self):
-        # Call parent implementation
-        super()._extract_calls()
-        
-        # Add custom detection logic
-        for i, line in enumerate(self.source_content.splitlines(), 1):
-            # Your custom regex here
-            match = re.search(r'SPECIAL_CALL\s+(\w+)', line)
-            if match:
-                self.pending_links.append({
-                    'caller': self._get_context_for_line(i),
-                    'callee': match.group(1),
-                    'type': 'call',
-                    'line': i
-                })
-```
-
-### Custom Symbol Resolution
-
-> **Note:** A "symbol" is any named code element (function, class, method, variable) that can be referenced in code.
-
-Override `resolve_symbol()` in the Library class for language-specific resolution:
-
-```python
-class GraphQLLibrary(GraphQLLibrary):
-    def resolve_symbol(self, name, context_module=None, **kwargs):
-        # Try standard resolution first
-        result = super().resolve_symbol(name, context_module, **kwargs)
-        if result[0]:
-            return result
-        
-        # Add custom resolution logic
-        # e.g., import-aware resolution, namespace lookup, etc.
-        return None, None
-```
-
----
-
-## Analysis Output
-
-### Objects Created
-
-The extension creates CAST objects for each detected code structure:
-
-```
-GraphQL ANALYSIS SUMMARY
-┌─── OBJECTS CREATED (X total) ───
-│
-│  myfile.graphql
-│    └─ MyClass (Class)
-│    └─ my_function (Function)
-│    └─ helper (Function)
-└─────────────────────────────────
-```
-
-### Links Created
-
-Call relationships are created between objects:
-
-```
-┌─── LINKS CREATED (Y total) ───
-│
-│  Intra-file calls:
-│    myfile.graphql:
-│      my_function → helper (L23)
-│      MyClass.method1 → MyClass.method2 (L45)
-│
-│  Inter-file calls:
-│    fileA.graphql::funcA → fileB.graphql::funcB (L67)
-└────────────────────────────────────
-```
-
-### Unresolved Calls Report
-
-Transparency report showing what couldn't be resolved:
-
-```
-┌─── UNRESOLVED CALLS REPORT (Z total) ───
-│
-│  Variable call - type unknown (X occurrences)
-│  Ambiguous - N definitions found (Y occurrences)
-│  Symbol not found in project (Z occurrences)
-└──────────────────────────────────────────────
-```
-
-Access the detailed report in CAST Imaging under Reports > `GraphQL_UnresolvedCalls`.
-
----
-
-## Limitations
-
-### Known Limitations
-
-1. **No Type Inference**
-   - Cannot resolve `variable.method()` calls without knowing variable type
-   - Requires static type analysis (not implemented)
-
-2. **Ambiguous Names**
-   - Multiple functions with same name across files → No link created
-   - Prevents false positives but misses some valid calls
-
-3. **External Libraries**
-   - Calls to external libraries (not in analyzed code) are not resolved
-   - Appears in Unresolved Calls Report
-
-4. **Dynamic Code**
-   - Runtime-generated code not analyzed
-   - `eval()`, `exec()`, reflection, metaprogramming not supported
-
-5. **Complex Language Features**
-   - Language-specific advanced features may not be fully supported
-   - Regex-based parsing has inherent limitations
-
-### Workarounds
-
-- **Type hints**: Add inline comments for critical variable types
-- **Manual links**: Use Application Level extension to create cross-technology links
-- **Custom parsers**: Override parsing methods for specific constructs
-- **External stubs**: Create stub definitions for external libraries if critical
-
----
-
-## Troubleshooting
-
-### No Objects Detected
-
-**Symptom**: Analysis completes but no objects found.
-
-**Possible causes**:
-1. File extensions don't match configured patterns
-2. Detection patterns don't match your code style
-3. Files are binary or encoded incorrectly
-
-**Solutions**:
-- Check file extensions in configuration
-- Review detection patterns in `graphql_module.py`
-- Verify source files are UTF-8 text
-
-### Too Many Unresolved Calls
-
-**Symptom**: Most calls appear in Unresolved Calls Report.
-
-**Possible causes**:
-1. Heavy use of OOP with variable method calls (expected)
-2. Missing object types in configuration
-3. Naming conventions don't match detection patterns
-
-**Solutions**:
-- Review the report to identify patterns
-- Add missing object types if needed
-- Consider custom resolution for your codebase
-
-### False Positive Links
-
-**Symptom**: Links created between unrelated code.
-
-**This should be rare** due to strict resolution. If it occurs:
-1. Check for naming collisions (same names in different contexts)
-2. Review fullname construction (should include full path)
-3. Report the issue with code samples
-
-### Analysis Errors
-
-**Symptom**: Extension crashes or throws exceptions.
-
-**Solutions**:
-1. Check Analysis logs for error details
-2. Verify source files are valid GraphQL code
-3. Look for edge cases in regex patterns
-4. Review graphql_analyser_level.py logs
-
----
-
-## Performance
-
-### Typical Performance
-
-- **Light Parse** (Phase 1): ~1000 files/minute
-- **Full Parse** (Phase 2): ~500 files/minute
-- **Memory**: ~100MB for 10,000 files
-
-### Optimization Tips
-
-1. **Exclude unnecessary files**: Configure `.castignore` to skip test files, generated code, etc.
-2. **Simplify patterns**: Complex regex patterns slow down parsing
-3. **Limit keywords list**: Only include essential keywords to exclude
-
----
-
-## Support
-
-### Getting Help
-
-1. **Documentation**: First, consult the main generator README and this documentation
-2. **Logs**: Check CAST Analysis logs for detailed execution trace
-3. **Reports**: Review Unresolved Calls Report for insight into limitations
-4. **Contact**: For questions or support, contact **Ayoub ALA** (Solutions Architect, NY)
-
-### Contributing
-
-This extension was generated by the CAST Extension Generator. To improve it:
-
-1. **Report issues**: Document edge cases and unexpected behavior
-2. **Share patterns**: Contribute improved regex patterns
-3. **Custom implementations**: Share successful customizations
-
----
-
-## Backend-to-Schema Linking (Future Enhancement)
-
-### Current Implementation (Naive)
-
-The extension currently creates USE links between Java backend methods and GraphQL schema fields using a **simple name-based matching** approach:
-
-- Java methods (JV_METHOD) are matched to GraphQL fields by method name
-- Example: Java method `user()` → GraphQL field `Query.user`
-
-**Limitations:**
-- May create false positives (linking unrelated methods with same names)
-- Cannot verify if methods are actually GraphQL resolvers
-- No annotation checking
-
-### Future Implementation (100% Accurate)
-
-To guarantee correct backend-to-schema links, the following conditions should ALL be met:
-
-#### ✅ Required Conditions for 100% Confidence
-
-1. **Parent Class has `@Controller` annotation**
-   - Ensures the Java class is a Spring GraphQL controller
-   - Eliminates utility classes, services, and other non-controller classes
-
-2. **Method has `@QueryMapping` OR `@MutationMapping` annotation**
-   - Guarantees the method is exposed as a GraphQL endpoint
-   - Eliminates private/utility methods within the controller
-
-3. **Method name matches GraphQL field name**
-   - Default behavior: Spring uses method name as field name
-   - Override behavior: If annotation specifies a name like `@QueryMapping("customName")`, use that name instead
-   - Example: `@QueryMapping("users")` on method `getAllUsers()` → match to field "users"
-
-4. **Annotation type matches GraphQL operation type**
-   - `@QueryMapping` → must link to a field in the `Query` type
-   - `@MutationMapping` → must link to a field in the `Mutation` type
-   - **No cross-linking** (e.g., Query method to Mutation field)
-
-#### 🎯 Matching Algorithm (Future)
-
-```pseudo
-FOR EACH Java method (JV_METHOD):
-  parent_class = method.get_parent()
-  
-  IF parent_class.has_annotation("@Controller"):
-    IF method.has_annotation("@QueryMapping"):
-      field_name = method.annotation_value("@QueryMapping") OR method.name
-      schema_field = find_field_in_type("Query", field_name)
-      IF schema_field EXISTS:
-        CREATE USE LINK: method → schema_field
-    
-    ELSE IF method.has_annotation("@MutationMapping"):
-      field_name = method.annotation_value("@MutationMapping") OR method.name
-      schema_field = find_field_in_type("Mutation", field_name)
-      IF schema_field EXISTS:
-        CREATE USE LINK: method → schema_field
-```
-
-#### 🚫 Current Blocker
-
-**Why we can't implement this now:**
-
-The Java analyzer extension does not broadcast annotation information through the CAST SDK. Specifically:
-- JV_CLASS and JV_METHOD objects are created without annotation metadata
-- No way to query if a class has `@Controller` or if a method has `@QueryMapping`
-- No access to annotation values (e.g., `@QueryMapping("customName")`)
-
-**Workaround:**
-- Use naive name-based matching for now
-- Document false positives as a known limitation
-- Plan enhancement when Java extension adds annotation broadcasting
-
-#### 📋 Implementation Checklist (Future)
-
-- [ ] Java analyzer extension updated to broadcast annotations
-- [ ] Add annotation query methods to CAST SDK
-- [ ] Implement annotation-aware matching logic
-- [ ] Add validation to prevent cross-type linking
-- [ ] Update tests to verify annotation-based matching
-- [ ] Remove naive implementation and document breaking change
-
----
-
-## Version History
-
-### 1.0.6 (Current)
-- Added client-side GraphQL operation detection (useQuery/useMutation)
-- Added USE links from client operations to schema
-- Added naive backend-to-schema linking (name-based)
-- Documented future enhancement strategy for accurate backend linking
-
-### 1.0.5
-- Initial release
-- Strict resolution to avoid false positives
-- Unresolved calls reporting
-- Support for GraphQL core constructs
-
----
-
-## License
-
-See COPYING.LESSER.txt for license information.
-
----
-
-## Technical Details
-
-### Architecture
-
-```
-GraphQLAnalyzerExtension (analyser_level)
-    ├─ Phase 1: Light Parse
-    │   ├─ Read source files
-    │   ├─ Extract global structures
-    │   └─ Create CAST objects
-    │
-    └─ Phase 2: Full Parse & Resolution
-        ├─ Extract calls
-        ├─ Resolve references (strict)
-        ├─ Create links
-        └─ Generate reports
-
-GraphQLLibrary
-    ├─ Global symbol table
-    ├─ Resolution with ambiguity detection
-    └─ Multi-file coordination
-
-GraphQLModule
-    ├─ File-level parsing
-    ├─ AST construction
-    └─ Link tracking
-```
-
-### File Structure
-
-```
-com.castsoftware.uc.graphql/
-├── configuration/
-│   └── Languages/
-│       └── GraphQL/
-│           ├── GraphQLMetaModel.xml
-│           └── GraphQLLanguagePattern.xml
-├── graphql_analyser_level.py      # Main analyzer
-├── graphql_module.py              # File parser
-├── graphql_application_level.py   # Cross-tech hooks
-├── plugin.nuspec                       # Package metadata
-└── README.md                           # This file
-```
-
----
-
-**Generated by CAST Extension Generator**  
+**GraphQL schema objects generated by CAST Extension Generator**  
 For questions or issues, refer to the generator documentation.

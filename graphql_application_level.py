@@ -5,16 +5,25 @@ GraphQL Application Level Extension
 This module implements the application-level processing for GraphQL.
 It runs after all analyzer-level extensions have completed.
 
-Use cases for application-level processing:
-- Cross-technology link creation (e.g., linking to databases, APIs)
-- Post-analysis calculations and aggregations
-- Quality rule implementations
-- Custom report generation
+Key features:
+- Create links between GraphQL client operations and GraphQL schema
+- Create links from GraphQL schema fields to Java backend methods
 
-The application level has access to:
-- The complete knowledge base with all created objects
-- Objects from other technologies analyzed in the same application
-- Application-wide metadata and statistics
+Links created:
+1. Client-to-Schema (USE links):
+   - GraphQLClientQuery/Mutation/Subscription → GraphQLField
+   - Based on 'fieldsSelected' property of client definitions
+   
+2. Schema-to-Backend (CALL links):
+   - GraphQLField → JV_METHOD (Java)
+   - Based on name matching and annotations (@QueryMapping, @MutationMapping)
+   - Requires parent class to have @Controller annotation
+
+Available APIs:
+- self.application: Access to the Application object
+- self.application.get_files(): Get all analyzed files
+- self.application.search_objects(): Search for objects by type/name
+- ReferenceFinder: Find references to strings in the knowledge base
 
 Python 3.4+ compatible.
 """
@@ -31,10 +40,14 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
     GraphQL Application Level Extension.
     
     Called after all analyzer-level processing is complete.
-    Use this for cross-technology analysis and post-processing.
+    Creates cross-technology links between different GraphQL components.
     
     Available methods:
-    - end_application(): Called once after all analysis is complete
+    - end_application(): Called once after analysis is complete
+    
+    Links created:
+    - Client → Schema: Links GraphQL client operations to schema fields
+    - Schema → Backend: Links GraphQL schema fields to Java backend methods
     
     Available APIs:
     - self.application: Access to the Application object
@@ -48,11 +61,20 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         Called once after all analyzer-level extensions have completed.
         
         This is the entry point for application-level processing.
-        Creates cross-technology links between GraphQL client operations
-        and GraphQL schema objects.
+        Creates cross-technology links between GraphQL client operations,
+        Java backend methods, and GraphQL schema objects.
+        
+        Links created:
+        1. Client → Schema (USE links):
+           - GraphQLClientQuery → GraphQLField (Query)
+           - GraphQLClientMutation → GraphQLField (Mutation)
+           - GraphQLClientSubscription → GraphQLField (Subscription)
+           
+        2. Schema → Backend (CALL links):
+           - GraphQLField → JV_METHOD (annotated Java methods)
         
         Args:
-            application: CAST Application object
+            application: CAST Application object containing all analyzed objects
         """
         try:
             info('[GraphQL Application] Starting cross-technology link creation')
@@ -60,11 +82,8 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
             # Create links between client operations and schema objects
             self._link_client_to_schema(application)
             
-            # Create links between backend methods and schema objects
-            self._link_backend_to_schema(application)
-            
-            # Create direct call links between frontend and backend
-            self._link_frontend_to_backend(application)
+            # Create links from schema to backend methods
+            self._link_schema_to_backend(application)
             
             info('[GraphQL Application] Cross-technology link creation complete')
             
@@ -76,9 +95,19 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         """
         Get the parent object by extracting the parent name from the fullname.
         
-        :param obj: The object whose parent we want to retrieve
-        :param application: The application containing the object
-        :return: The parent object or None if no parent is found
+        Used to verify if the parent class of a Java method has the @Controller
+        annotation (required for GraphQL resolvers).
+        
+        Args:
+            obj: The object whose parent we want to retrieve
+            application: The application containing the object
+            
+        Returns:
+            The parent object (Java class) or None if no parent is found
+            
+        Example:
+            fullname: "com.example.demo.CorsConfig.corsFilter"
+            → extracts "CorsConfig" and searches for corresponding JV_CLASS
         """
         fullname = obj.get_fullname()
         
@@ -99,6 +128,19 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         Create USE links between GraphQL client definitions and schema fields.
         
         Links GraphQLClientQuery/Mutation/Subscription objects to GraphQLField objects.
+        
+        Linking logic:
+        - Retrieves all client objects (Query, Mutation, Subscription)
+        - Builds an index of schema fields (Query, Mutation, Subscription types)
+        - For each client object, extracts the 'fieldsSelected' property
+        - Creates a USE link between client and each corresponding schema field
+        
+        Example:
+            Client: GraphQLClientQuery with fieldsSelected="users,posts"
+            → Creates 2 USE links to Query.users and Query.posts
+        
+        Args:
+            application: CAST Application object
         """
         info('[GraphQL Application] ========================================')
         info('[GraphQL Application] Starting client-to-schema linking')
@@ -165,7 +207,20 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         info('[GraphQL Application] ========================================')
     
     def _link_client_to_fields(self, client_obj, schema_fields, operation_type):
-        """Link a client object to schema fields based on fieldsSelected property."""
+        """
+        Link a client object to schema fields based on fieldsSelected property.
+        
+        Args:
+            client_obj: GraphQL client object (Query/Mutation/Subscription)
+            schema_fields: Dictionary {field_name: GraphQLField_object}
+            operation_type: Operation type ('Query', 'Mutation', 'Subscription')
+            
+        Returns:
+            Number of links created
+            
+        Note:
+            The fieldsSelected property is stored as a comma-separated string
+        """
         links_created = 0
         
         try:
@@ -202,29 +257,39 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         
         return links_created
 
-    def _link_backend_to_schema(self, application):
+    def _link_schema_to_backend(self, application):
         """
-        Create RELY ON links between Java backend methods and GraphQL schema fields.
+        Create CALL links from GraphQL schema fields to Java backend methods.
         
         Uses name-based matching between Java method names and GraphQL field names,
         with annotation verification to reduce false positives.
         
-        Only creates links when:
-        - Parent class has @Controller annotation, AND
-        - Method name matches a GraphQL field name, AND
-        - Method has the appropriate annotation:
+        Link creation criteria:
+        - Parent class must have @Controller annotation, AND
+        - Method name must match a GraphQL field name, AND
+        - Method must have the appropriate annotation:
           - @QueryMapping for Query fields
           - @MutationMapping for Mutation fields
+          - @SubscriptionMapping for Subscription fields
+        
+        Architecture created:
+            GraphQLField (Query.user) → (CALL) → JV_METHOD (user())
+            GraphQLField (Mutation.createUser) → (CALL) → JV_METHOD (createUser())
+            GraphQLField (Subscription.studentUpdated) → (CALL) → JV_METHOD (studentUpdated())
         
         Matching logic:
-        - Java method "user" with @QueryMapping in a @Controller class → GraphQL field "Query.user"
-        - Java method "createUser" with @MutationMapping in a @Controller class → GraphQL field "Mutation.createUser"
+        - Java method "user" with @QueryMapping in @Controller class
+          → GraphQL field "Query.user"
+        - Java method "createUser" with @MutationMapping in @Controller class
+          → GraphQL field "Mutation.createUser"
+        - Java method "studentUpdated" with @SubscriptionMapping in @Controller class
+          → GraphQL field "Subscription.studentUpdated"
         
         Args:
-            application: CAST Application object
+            application: CAST Application object containing all analyzed objects
         """
         info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] Starting backend-to-schema link creation')
+        info('[GraphQL Application] Starting schema-to-backend link creation')
         info('[GraphQL Application] ========================================')
         
         # Find all Java methods with properties loaded to check annotations
@@ -246,6 +311,7 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         info('[GraphQL Application] Building schema field index...')
         schema_queries = {}
         schema_mutations = {}
+        schema_subscriptions = {}
         
         # Find Query and Mutation types, then load their field children
         graphql_types = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLType']
@@ -282,11 +348,26 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                         info('[GraphQL Application]   - Indexed mutation field: "' + field_name + '" (fullname: ' + str(field_obj.get_fullname()) + ')')
                     else:
                         debug('[GraphQL Application]   - Skipping non-field child: ' + field_obj.get_type())
+                    
+            elif type_name == 'Subscription':
+                info('[GraphQL Application] Found Subscription type: ' + str(type_obj.get_fullname()))
+                type_obj.load_children()
+                children = type_obj.get_children()
+                debug('[GraphQL Application]   - Subscription type has ' + str(len(children)) + ' children')
+                
+                for field_obj in children:
+                    if field_obj.get_type() == 'GraphQLField':
+                        field_name = field_obj.get_name()
+                        schema_subscriptions[field_name] = field_obj
+                        info('[GraphQL Application]   - Indexed subscription field: "' + field_name + '" (fullname: ' + str(field_obj.get_fullname()) + ')')
+                    else:
+                        debug('[GraphQL Application]   - Skipping non-field child: ' + field_obj.get_type())
         
         info('[GraphQL Application] Schema index complete: ' + str(len(schema_queries)) + 
-                ' query fields, ' + str(len(schema_mutations)) + ' mutation fields')
+                ' query fields, ' + str(len(schema_mutations)) + ' mutation fields, ' + 
+                str(len(schema_subscriptions)) + ' subscription fields')
         
-        if len(schema_queries) == 0 and len(schema_mutations) == 0:
+        if len(schema_queries) == 0 and len(schema_mutations) == 0 and len(schema_subscriptions) == 0:
             warning('[GraphQL Application] No GraphQL schema fields found - nothing to link to')
             return
         
@@ -298,6 +379,7 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         links_created = 0
         queries_matched = 0
         mutations_matched = 0
+        subscriptions_matched = 0
         not_matched = 0
         
         for java_method in java_methods:
@@ -371,6 +453,23 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                     else:
                         debug('[GraphQL Application]   - Skipping: No @MutationMapping annotation found')
                 
+                # Try to match with Subscription fields
+                elif method_name in schema_subscriptions:
+                    # Check if method has @SubscriptionMapping annotation
+                    has_subscription_mapping = any('@SubscriptionMapping' in str(ann) for ann in annotations) if annotations else False
+                    
+                    if has_subscription_mapping:
+                        schema_obj = schema_subscriptions[method_name]
+                        info('[GraphQL Application] >>> CREATING LINK: callLink')
+                        info('[GraphQL Application]     FROM (schema):  ' + str(schema_obj.get_fullname()) + ' [' + schema_obj.get_type() + ']')
+                        info('[GraphQL Application]     TO (backend):   ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
+                        info('[GraphQL Application]     ANNOTATION: ' + str([ann for ann in annotations if '@SubscriptionMapping' in str(ann)]))
+                        create_link('callLink', schema_obj, java_method)
+                        links_created += 1
+                        subscriptions_matched += 1
+                    else:
+                        debug('[GraphQL Application]   - Skipping: No @SubscriptionMapping annotation found')
+                
                 else:
                     # No match found - this is expected for most Java methods
                     debug('[GraphQL Application] No match for Java method: "' + method_name + '"')
@@ -381,277 +480,9 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                 debug('[GraphQL Application] ' + traceback.format_exc())
         
         info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' CALL links')
-        info('[GraphQL Application]   - Query methods:    ' + str(queries_matched) + ' linked')
-        info('[GraphQL Application]   - Mutation methods: ' + str(mutations_matched) + ' linked')
-        info('[GraphQL Application]   - Not matched:      ' + str(not_matched) + ' (expected - most Java methods are not GraphQL resolvers)')
-        info('[GraphQL Application] ========================================')
-
-    def _link_frontend_to_backend(self, application):
-        """
-        Create CALL links between GraphQL Apollo hook requests and Java backend methods.
-        
-        ARCHITECTURE:
-        React Component → (callLink) → GraphQLQueryRequest → (callLink) → JV_METHOD
-                                              ↓ (useLink)
-                                        GraphQLClientQuery
-        
-        The Apollo hook calls (GraphQLQueryRequest/MutationRequest) are what actually
-        execute the GraphQL operations, so they should have the callLink to backend methods.
-        
-        Matching logic:
-        - GraphQLQueryRequest uses fieldsSelected from its linked GraphQLClientQuery
-        - Match fieldsSelected with Java method names
-        - Example: Request → (fieldsSelected="users") → users() Java method
-        
-        Args:
-            application: CAST Application object
-        """
-        info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] Starting frontend-to-backend link creation (APOLLO REQUESTS)')
-        info('[GraphQL Application] ========================================')
-        
-        # Find all Apollo hook request objects - load properties in case we need them
-        debug('[GraphQL Application] Searching for Apollo hook requests...')
-        query_requests = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLQueryRequest']
-        lazy_query_requests = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLLazyQueryRequest']
-        mutation_requests = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLMutationRequest']
-        subscription_requests = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLSubscriptionRequest']
-        
-        info('[GraphQL Application] Found ' + str(len(query_requests)) + ' GraphQLQueryRequest objects')
-        info('[GraphQL Application] Found ' + str(len(lazy_query_requests)) + ' GraphQLLazyQueryRequest objects')
-        info('[GraphQL Application] Found ' + str(len(mutation_requests)) + ' GraphQLMutationRequest objects')
-        info('[GraphQL Application] Found ' + str(len(subscription_requests)) + ' GraphQLSubscriptionRequest objects')
-        
-        all_requests = query_requests + lazy_query_requests + mutation_requests + subscription_requests
-        if len(all_requests) == 0:
-            warning('[GraphQL Application] No Apollo hook requests found - nothing to link')
-            return
-        
-        # Find all Java methods
-        debug('[GraphQL Application] Searching for Java methods...')
-        java_methods = [obj for obj in application.get_objects() if obj.get_type() == 'JV_METHOD']
-        
-        info('[GraphQL Application] Found ' + str(len(java_methods)) + ' JV_METHOD objects')
-        
-        if len(java_methods) == 0:
-            warning('[GraphQL Application] No Java methods found - nothing to link to')
-            return
-        
-        # Build index of Java methods by name for faster lookup
-        info('[GraphQL Application] Building Java method index...')
-        java_methods_by_name = {}
-        for method in java_methods:
-            method_name = method.get_name()
-            # Handle potential name collisions by storing as list
-            if method_name not in java_methods_by_name:
-                java_methods_by_name[method_name] = []
-            # Reload the method with properties to get annotations
-            reloaded = list(application.search_objects(name=method_name, category='JV_METHOD', load_properties=True))
-            if reloaded:
-                # Add all reloaded methods with this name (handles overloads)
-                java_methods_by_name[method_name].extend(reloaded)
-            else:
-                # Fallback: keep the original method even without properties
-                java_methods_by_name[method_name].append(method)
-        
-        info('[GraphQL Application] Java method index complete: ' + str(len(java_methods_by_name)) + ' unique method names')
-        
-        # Build index of GraphQLClient definitions by name for reverse lookup
-        info('[GraphQL Application] Building client definition index...')
-        client_definitions = {}
-        for obj in application.search_objects(load_properties=True):
-            obj_type = obj.get_type()
-            if obj_type in ['GraphQLClientQuery', 'GraphQLClientMutation', 'GraphQLClientSubscription']:
-                client_definitions[obj.get_fullname()] = obj
-        info('[GraphQL Application] Client definition index complete: ' + str(len(client_definitions)) + ' definitions')
-        
-        info('[GraphQL Application] ----------------------------------------')
-        info('[GraphQL Application] Matching Apollo requests to Java methods...')
-        info('[GraphQL Application] ----------------------------------------')
-        
-        # Match Apollo hook requests to Java methods
-        links_created = 0
-        requests_matched = 0
-        not_matched = 0
-        multiple_matches = 0
-        
-        # Process all request types
-        for request_obj in all_requests:
-            try:
-                request_name = request_obj.get_name()
-                request_type = request_obj.get_type()
-                info('[GraphQL Application] >>> Processing ' + request_type + ': "' + request_name + '"')
-                
-                # Step 1: Find the GraphQLClient definition this request uses (via useLink)
-                fields_selected = None
-                client_def = None
-                
-                # Get all outgoing useLinks from this request
-                info('[GraphQL Application]   - Searching for useLinks from this request...')
-                try:
-                    # Application level API: use application.links().has_caller(request_obj)
-                    outgoing_links = list(application.links().has_caller([request_obj]))
-                    info('[GraphQL Application]   - Found ' + str(len(outgoing_links)) + ' total outgoing links')
-                    
-                    for idx, link in enumerate(outgoing_links):
-                        # EnlightenLink API: use get_type_names() which returns a list like ['use']
-                        link_types = link.get_type_names()
-                        info('[GraphQL Application]   - Link ' + str(idx) + ': types=' + str(link_types))
-                        
-                        if 'use' in link_types:
-                            linked_obj = link.get_callee()  # Get the target object (callee)
-                            info('[GraphQL Application]     - useLink found! Target object: ' + str(linked_obj))
-                            if linked_obj:
-                                linked_type = linked_obj.get_type()
-                                linked_name = linked_obj.get_name()
-                                info('[GraphQL Application]     - Linked object type: ' + linked_type + ', name: "' + linked_name + '"')
-                                
-                                if linked_type in ['GraphQLClientQuery', 'GraphQLClientMutation', 'GraphQLClientSubscription']:
-                                    client_def = linked_obj
-                                    info('[GraphQL Application]   - ✓ Found linked client definition: "' + client_def.get_name() + '" [' + linked_type + ']')
-                                    break
-                except Exception as e:
-                    warning('[GraphQL Application]   - ERROR traversing useLinks: ' + str(e))
-                    import traceback
-                    warning('[GraphQL Application]   - ' + traceback.format_exc())
-                
-                # Step 2: Extract fieldsSelected from the client definition
-                if client_def:
-                    info('[GraphQL Application]   - Extracting fieldsSelected from client definition...')
-                    try:
-                        # IMPORTANT: Re-fetch object with properties loaded
-                        # Application level objects from links don't have properties loaded
-                        obj_name = client_def.get_name()
-                        obj_type = client_def.get_type()
-                        reloaded_objs = list(application.search_objects(name=obj_name, category=obj_type, load_properties=True))
-                        
-                        if reloaded_objs:
-                            client_def = reloaded_objs[0]
-                            info('[GraphQL Application]   - Re-fetched client definition with properties loaded')
-                        else:
-                            warning('[GraphQL Application]   - Could not re-fetch client definition with properties')
-                            client_def = None
-                        
-                        if client_def:
-                            fields_selected_raw = client_def.get_property('GraphQL_Client_Definition.fieldsSelected')
-                            if fields_selected_raw:
-                                info('[GraphQL Application]   - Raw fieldsSelected: "' + str(fields_selected_raw) + '"')
-                                # Parse comma-separated list of fields
-                                fields = [f.strip() for f in str(fields_selected_raw).split(',')]
-                                if fields:
-                                    # Use the first field for matching (most common case)
-                                    fields_selected = fields[0]
-                                    info('[GraphQL Application]   - ✓ Using first field for matching: "' + fields_selected + '"')
-                            else:
-                                warning('[GraphQL Application]   - fieldsSelected property is empty or None')
-                    except Exception as e:
-                        warning('[GraphQL Application]   - ERROR getting fieldsSelected property: ' + str(e))
-                else:
-                    warning('[GraphQL Application]   - ✗ No client definition found via useLink')
-                
-                # Fallback: try to extract from request name (format: "useQuery:GET_USERS")
-                if not fields_selected:
-                    info('[GraphQL Application]   - No fieldsSelected found, trying name-based extraction as fallback...')
-                    if ':' in request_name:
-                        parts = request_name.split(':')
-                        if len(parts) >= 2:
-                            # Try to extract from variable name (last part)
-                            var_name = parts[-1]
-                            info('[GraphQL Application]   - Extracted variable name from request: "' + var_name + '"')
-                            # This is a fallback, won't work for GET_USERS -> users mapping
-                            info('[GraphQL Application]   - WARNING: Fallback won\'t work for camelCase mismatch (GET_USERS != users)')
-                    else:
-                        warning('[GraphQL Application]   - Cannot extract field name from request: "' + request_name + '"')
-                
-                # Step 3: Match with Java methods by field name
-                if fields_selected and fields_selected in java_methods_by_name:
-                    matched_methods = java_methods_by_name[fields_selected]
-                    debug('[GraphQL Application]   - Found ' + str(len(matched_methods)) + ' candidate method(s) named "' + fields_selected + '"')
-                    
-                    # Filter methods using same logic as backend-to-schema linking
-                    valid_methods = []
-                    for java_method in matched_methods:
-                        # Get parent class of the Java method
-                        parent_class = self._get_parent(java_method, application)
-                        
-                        # Check if parent class has @Controller annotation
-                        if not parent_class:
-                            debug('[GraphQL Application]   - Skipping method (no parent class): ' + java_method.get_fullname())
-                            continue
-                        
-                        parent_annotations = []
-                        try:
-                            parent_annotations = parent_class.get_property("CAST_Java_AnnotationMetrics.Annotation")
-                        except:
-                            pass
-                        
-                        has_controller = any('@Controller' in str(ann) for ann in parent_annotations) if parent_annotations else False
-                        if not has_controller:
-                            debug('[GraphQL Application]   - Skipping method (parent lacks @Controller): ' + java_method.get_fullname())
-                            continue
-                        
-                        # Get method annotations
-                        annotations = []
-                        try:
-                            annotations = java_method.get_property("CAST_Java_AnnotationMetrics.Annotation")
-                        except:
-                            pass
-                        
-                        # Check for correct GraphQL annotation based on request type
-                        is_valid = False
-                        if request_type in ['GraphQLQueryRequest', 'GraphQLLazyQueryRequest']:
-                            has_query_mapping = any('@QueryMapping' in str(ann) for ann in annotations) if annotations else False
-                            if has_query_mapping:
-                                is_valid = True
-                                debug('[GraphQL Application]   - ✓ Valid query resolver: ' + java_method.get_fullname())
-                        elif request_type == 'GraphQLMutationRequest':
-                            has_mutation_mapping = any('@MutationMapping' in str(ann) for ann in annotations) if annotations else False
-                            if has_mutation_mapping:
-                                is_valid = True
-                                debug('[GraphQL Application]   - ✓ Valid mutation resolver: ' + java_method.get_fullname())
-                        elif request_type == 'GraphQLSubscriptionRequest':
-                            has_subscription_mapping = any('@SubscriptionMapping' in str(ann) for ann in annotations) if annotations else False
-                            if has_subscription_mapping:
-                                is_valid = True
-                                debug('[GraphQL Application]   - ✓ Valid subscription resolver: ' + java_method.get_fullname())
-                        
-                        if is_valid:
-                            valid_methods.append(java_method)
-                        else:
-                            debug('[GraphQL Application]   - Skipping method (no matching GraphQL annotation): ' + java_method.get_fullname())
-                    
-                    # Create links only to valid GraphQL resolvers
-                    if valid_methods:
-                        if len(valid_methods) > 1:
-                            warning('[GraphQL Application] Multiple valid GraphQL resolvers found with name "' + fields_selected + '": ' + str(len(valid_methods)) + ' matches (linking to all)')
-                            multiple_matches += 1
-                        
-                        # Create callLink from REQUEST to BACKEND METHOD
-                        for java_method in valid_methods:
-                            info('[GraphQL Application] >>> CREATING LINK: callLink')
-                            info('[GraphQL Application]     FROM (request):  ' + str(request_obj.get_fullname()) + ' [' + request_type + ']')
-                            info('[GraphQL Application]     TO (backend):    ' + str(java_method.get_fullname()) + ' [' + java_method.get_type() + ']')
-                            info('[GraphQL Application]     MATCHED FIELD:   "' + fields_selected + '"')
-                            create_link('callLink', request_obj, java_method)
-                            links_created += 1
-                        
-                        requests_matched += 1
-                    else:
-                        debug('[GraphQL Application] No valid GraphQL resolvers found for field: "' + fields_selected + '" (found methods but none with correct annotations)')
-                        not_matched += 1
-                else:
-                    debug('[GraphQL Application] No Java method match for request field: "' + str(fields_selected) + '"')
-                    not_matched += 1
-                    
-            except Exception as e:
-                warning('[GraphQL Application] !!! ERROR linking request "' + request_obj.get_name() + '": ' + str(e))
-                debug('[GraphQL Application] ' + traceback.format_exc())
-        
-        info('[GraphQL Application] ========================================')
-        info('[GraphQL Application] FRONTEND-BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' CALL links')
-        info('[GraphQL Application]   - Requests matched:     ' + str(requests_matched) + ' Apollo hooks linked to backend')
-        info('[GraphQL Application]   - Not matched:          ' + str(not_matched))
-        if multiple_matches > 0:
-            info('[GraphQL Application]   - Multiple matches:     ' + str(multiple_matches) + ' requests linked to multiple methods')
+        info('[GraphQL Application] SCHEMA-BACKEND LINKING SUMMARY: Created ' + str(links_created) + ' CALL links')
+        info('[GraphQL Application]   - Query methods:        ' + str(queries_matched) + ' linked')
+        info('[GraphQL Application]   - Mutation methods:     ' + str(mutations_matched) + ' linked')
+        info('[GraphQL Application]   - Subscription methods: ' + str(subscriptions_matched) + ' linked')
+        info('[GraphQL Application]   - Not matched:          ' + str(not_matched) + ' (expected - most Java methods are not GraphQL resolvers)')
         info('[GraphQL Application] ========================================')

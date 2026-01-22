@@ -1,17 +1,17 @@
 <?xml version="1.0"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
   <metadata>
-    <id>com.castsoftware.uc.graphql</id>
-    <version>1.5.16</version>
-    <title>GraphQL</title>
+    <id>com.castsoftware.labs.graphql-apollo-client-java-spring</id>
+    <version>1.0.0</version>
+    <title>GraphQL for Apollo JS and Java Spring</title>
     <authors>CAST</authors>
     <owners>CAST</owners>
     <licenseUrl>http://www.castsoftware.com/ps/doc/extension/license</licenseUrl>
     <projectUrl>https://example.com/project</projectUrl>
     <iconUrl>https://example.com/icon.png</iconUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
-    <description>This extension parses GraphQL schema files and links React/Apollo Client code to GraphQL operations for full-stack transaction analysis</description>
-    <releaseNotes>v1.5.16: Added verification of @Controller annotation on parent class for backend method linking</releaseNotes>
+    <description>This extension supports JS Apollo communicating with Java Spring through GraphQL. Creates 3 link types: direct CALL link from JS to Java, USE link from JS to GraphQL schema, and CALL link from GraphQL schema to Java for complete full-stack transaction analysis</description>
+    <releaseNotes>v1.0.0: Initial release supporting JS Apollo and Java Spring integration through GraphQL with full-stack transaction analysis</releaseNotes>
     <tags>GraphQL API Schema Query Mutation Subscription React Apollo Client useQuery useMutation</tags>
     <dependencies>
       <dependency id="CAIP" version="8.3.3" />
