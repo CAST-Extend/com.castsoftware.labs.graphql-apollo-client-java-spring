@@ -10,6 +10,8 @@
 
 This CAST Universal Analyzer extension provides automated analysis of **GraphQL** applications including schema files and client-side code. It identifies GraphQL structures and creates call relationships to enable full-stack software architecture analysis in CAST Imaging.
 
+**Supported Architecture:** This extension supports **frontend JavaScript to backend Java communication through GraphQL** using **Apollo Client** hooks (`useQuery`, `useLazyQuery`, `useMutation`, `useSubscription`). **Apollo Server is not supported** - only the client-side Apollo Client library for making GraphQL requests.
+
 ### What This Extension Does
 
 - ✅ **Schema Object Detection**: Extracts GraphQL types, queries, mutations from schema files
@@ -20,7 +22,23 @@ This CAST Universal Analyzer extension provides automated analysis of **GraphQL*
 ### Supported File Extensions
 
 **Schema Files:** `*.graphql`, `*.gql`, `*.graphqls`  
-**Client Files:** `*.js`, `*.jsx`, `*.ts`, `*.tsx` (via HTML5/JavaScript analyzer integration)
+**Client Files:** `*.js`, `*.jsx`, `*.mjs`, `*.jsm`, `*.cjs` (via HTML5/JavaScript analyzer integration)
+
+**Note:** TypeScript files (`*.ts`, `*.tsx`) are **not yet supported**.
+
+### What's Supported vs. Not Supported
+
+**✅ Supported:**
+- Apollo Client hooks in JavaScript: `useQuery`, `useLazyQuery`, `useMutation`, `useSubscription`
+- GraphQL schema files (.graphql, .gql, .graphqls)
+- Frontend JavaScript → GraphQL schema → Backend Java transaction flow
+- Spring GraphQL backend with `@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`
+
+**❌ Not Yet Supported:**
+- TypeScript files (.ts, .tsx)
+- Apollo Server (server-side GraphQL implementation)
+- Other GraphQL client libraries (Relay, URQL, etc.)
+- Other backend frameworks (Node.js GraphQL servers, etc.)
 
 ---
 
