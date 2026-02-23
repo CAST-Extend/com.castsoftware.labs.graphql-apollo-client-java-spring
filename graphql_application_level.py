@@ -11,7 +11,7 @@ Key features:
 
 Links created:
 1. Client-to-Schema (USE links):
-   - GraphQLClientQuery/Mutation/Subscription → GraphQLField
+   - GqlQuery/Mutation/Subscription → GraphQLField
    - Based on 'fieldsSelected' property of client definitions
    
 2. Schema-to-Backend (CALL links):
@@ -66,9 +66,9 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         
         Links created:
         1. Client → Schema (USE links):
-           - GraphQLClientQuery → GraphQLField (Query)
-           - GraphQLClientMutation → GraphQLField (Mutation)
-           - GraphQLClientSubscription → GraphQLField (Subscription)
+           - GqlQuery → GraphQLField (Query)
+           - GqlMutation → GraphQLField (Mutation)
+           - GqlSubscription → GraphQLField (Subscription)
            
         2. Schema → Backend (CALL links):
            - GraphQLField → JV_METHOD (annotated Java methods)
@@ -127,7 +127,7 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         """
         Create USE links between GraphQL client definitions and schema fields.
         
-        Links GraphQLClientQuery/Mutation/Subscription objects to GraphQLField objects.
+        Links GqlQuery/Mutation/Subscription objects to GraphQLField objects.
         
         Linking logic:
         - Retrieves all client objects (Query, Mutation, Subscription)
@@ -136,7 +136,7 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         - Creates a USE link between client and each corresponding schema field
         
         Example:
-            Client: GraphQLClientQuery with fieldsSelected="users,posts"
+            Client: GqlQuery with fieldsSelected="users,posts"
             → Creates 2 USE links to Query.users and Query.posts
         
         Args:
@@ -147,13 +147,13 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         info('[GraphQL Application] ========================================')
         
         # Use search_objects(load_properties=True) to load properties needed for linking
-        client_queries = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientQuery']
-        client_mutations = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientMutation']
-        client_subscriptions = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientSubscription']
+        client_queries = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlQuery']
+        client_mutations = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlMutation']
+        client_subscriptions = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlSubscription']
         
-        info('[GraphQL Application] Found ' + str(len(client_queries)) + ' GraphQLClientQuery objects')
-        info('[GraphQL Application] Found ' + str(len(client_mutations)) + ' GraphQLClientMutation objects')
-        info('[GraphQL Application] Found ' + str(len(client_subscriptions)) + ' GraphQLClientSubscription objects')
+        info('[GraphQL Application] Found ' + str(len(client_queries)) + ' GqlQuery objects')
+        info('[GraphQL Application] Found ' + str(len(client_mutations)) + ' GqlMutation objects')
+        info('[GraphQL Application] Found ' + str(len(client_subscriptions)) + ' GqlSubscription objects')
         
         total_clients = len(client_queries) + len(client_mutations) + len(client_subscriptions)
         if total_clients == 0:

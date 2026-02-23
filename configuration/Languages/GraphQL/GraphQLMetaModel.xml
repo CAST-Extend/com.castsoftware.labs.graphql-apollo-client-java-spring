@@ -202,24 +202,24 @@
 	<!-- GraphQL Client Operations - LEVEL 1: gql definitions -->
 	<!-- Note: These objects have JavaScript/React parents, not GraphQL parents -->
 	<!-- So we don't declare a tree parent to avoid Enlighten tree errors -->
-	<type name="GraphQLClientQuery" rid="21">
-		<description>GraphQL Client Query Definition</description>
+	<type name="GqlQuery" rid="21">
+		<description>GraphQL gql Query Definition</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
-	<type name="GraphQLClientMutation" rid="22">
-		<description>GraphQL Client Mutation Definition</description>
+	<type name="GqlMutation" rid="22">
+		<description>GraphQL gql Mutation Definition</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
-	<type name="GraphQLClientSubscription" rid="24">
-		<description>GraphQL Client Subscription Definition</description>
+	<type name="GqlSubscription" rid="24">
+		<description>GraphQL gql Subscription Definition</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
@@ -227,7 +227,7 @@
 		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
 	<!-- GraphQL Apollo Hook Requests - LEVEL 2: hook usage -->
-	<type name="GraphQLQueryRequest" rid="25">
+	<type name="GraphQLApolloHookQuery" rid="25">
 		<description>Apollo useQuery Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
@@ -235,7 +235,7 @@
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
-	<type name="GraphQLLazyQueryRequest" rid="26">
+	<type name="GraphQLApolloHookLazyQuery" rid="26">
 		<description>Apollo useLazyQuery Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
@@ -243,7 +243,7 @@
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
-	<type name="GraphQLMutationRequest" rid="27">
+	<type name="GraphQLApolloHookMutation" rid="27">
 		<description>Apollo useMutation Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
@@ -251,7 +251,7 @@
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
-	<type name="GraphQLSubscriptionRequest" rid="28">
+	<type name="GraphQLApolloHookSubscription" rid="28">
 		<description>Apollo useSubscription Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>

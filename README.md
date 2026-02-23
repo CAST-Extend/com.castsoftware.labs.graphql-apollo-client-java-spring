@@ -68,15 +68,15 @@ This extension detects and analyzes the following GraphQL constructs:
 ### Client-Side Objects (from React/JavaScript code)
 
 #### Request Objects (Apollo Hook Calls)
-- **GraphQLQueryRequest**: Apollo `useQuery()` hook call
-- **GraphQLLazyQueryRequest**: Apollo `useLazyQuery()` hook call
-- **GraphQLMutationRequest**: Apollo `useMutation()` hook call
-- **GraphQLSubscriptionRequest**: Apollo `useSubscription()` hook call
+- **GraphQLApolloHookQuery**: Apollo `useQuery()` hook call
+- **GraphQLApolloHookLazyQuery**: Apollo `useLazyQuery()` hook call
+- **GraphQLApolloHookMutation**: Apollo `useMutation()` hook call
+- **GraphQLApolloHookSubscription**: Apollo `useSubscription()` hook call
 
 #### Client Definition Objects (gql Templates)
-- **GraphQLClientQuery**: Client-side query definition (gql template)
-- **GraphQLClientMutation**: Client-side mutation definition (gql template)
-- **GraphQLClientSubscription**: Client-side subscription definition (gql template)
+- **GqlQuery**: Client-side query definition (gql template)
+- **GqlMutation**: Client-side mutation definition (gql template)
+- **GqlSubscription**: Client-side subscription definition (gql template)
 
 ---
 
@@ -134,13 +134,13 @@ public class UserController {
 ```
 JavaScript Function "App" (in App.jsx)
 │
-├─ GraphQLQueryRequest "useQuery:GET_USERS"
+├─ GraphQLApolloHookQuery "useQuery:GET_USERS"
 │  │  (Apollo hook call - transforms definition into HTTP request)
 │  │
 │  └─ [USE link]
 │     │
 │     ↓
-│  GraphQLClientQuery "GET_USERS"
+│  GqlQuery "GET_USERS"
 │     (gql template definition - describes data structure to fetch)
 │     │
 │     └─ [USE link]
@@ -161,15 +161,15 @@ JavaScript Function "App" (in App.jsx)
 The extension creates **GraphQL-specific objects** for React/Apollo Client code:
 
 #### 1. Request Objects (Hook Calls)
-- **GraphQLQueryRequest** - Created at `useQuery()` call site
-- **GraphQLLazyQueryRequest** - Created at `useLazyQuery()` call site
-- **GraphQLMutationRequest** - Created at `useMutation()` call site
-- **GraphQLSubscriptionRequest** - Created at `useSubscription()` call site
+- **GraphQLApolloHookQuery** - Created at `useQuery()` call site
+- **GraphQLApolloHookLazyQuery** - Created at `useLazyQuery()` call site
+- **GraphQLApolloHookMutation** - Created at `useMutation()` call site
+- **GraphQLApolloHookSubscription** - Created at `useSubscription()` call site
 
 #### 2. Client Definition Objects (gql Templates)
-- **GraphQLClientQuery** - Created at `gql` query definition
-- **GraphQLClientMutation** - Created at `gql` mutation definition
-- **GraphQLClientSubscription** - Created at `gql` subscription definition
+- **GqlQuery** - Created at `gql` query definition
+- **GqlMutation** - Created at `gql` mutation definition
+- **GqlSubscription** - Created at `gql` subscription definition
 
 **Why we create these objects:**
 The HTML5/JavaScript analyzer does not support the Apollo Client framework used for GraphQL requests. It also does not create objects for `gql` template definitions. Without these custom GraphQL objects, there would be no way to link JavaScript code to GraphQL schema objects. Our extension bridges this gap by:
@@ -201,8 +201,8 @@ The linking is done by:
 ### Complete Transaction Flow
 
 **End-to-end analysis example:**
-1. **Frontend**: User clicks button → triggers `useQuery(GET_USERS)` (GraphQLQueryRequest)
-2. **Client Definition**: Request uses `GET_USERS` gql template (GraphQLClientQuery "GetUsers")
+1. **Frontend**: User clicks button → triggers `useQuery(GET_USERS)` (GraphQLApolloHookQuery)
+2. **Client Definition**: Request uses `GET_USERS` gql template (GqlQuery "GetUsers")
 3. **Schema**: Query asks for "users" field from Type Query (GraphQLQuery field "users")
 4. **Backend**: Field resolves to Java method `users()` with @QueryMapping (JV_METHOD)
 5. **Data flow**: Java method fetches data → returns to schema → returns to client → updates UI
@@ -217,10 +217,10 @@ This enables **full-stack transaction analysis** in CAST Imaging from React UI �
 
 **Implementation:** `graphql_client_analyzer.py`
 
-Client objects (GraphQLQueryRequest, GraphQLClientQuery, etc.) are created as **children** of JavaScript objects. During object creation, links are established to JavaScript objects:
+Client objects (GraphQLApolloHookQuery, GqlQuery, etc.) are created as **children** of JavaScript objects. During object creation, links are established to JavaScript objects:
 - **CONTAINMENT** links: Request/Definition objects are children of JS objects
 - **CALL** links: If the parent JS object is a function
-- **USE** links: To JavaScript variables (e.g., linking GraphQLQueryRequest to the GraphQLClientQuery referencing the gql template)
+- **USE** links: To JavaScript variables (e.g., linking GraphQLApolloHookQuery to the GqlQuery referencing the gql template)
 
 This file communicates with the HTML5/JavaScript analyzer using an **event-driven architecture** to:
 - Catch events from the HTML5/JS analyzer
@@ -237,7 +237,7 @@ This file communicates with the HTML5/JavaScript analyzer using an **event-drive
 **Matching logic:**
 - Parse the `gql` template to extract the root field being queried (e.g., "users" from `query GetUsers { users { ... } }`)
 - Match this field name to a corresponding GraphQLQuery/GraphQLMutation/GraphQLSubscription object in the schema
-- Create USE link: `GraphQLClientQuery/Mutation/Subscription` → `GraphQLQuery/Mutation/Subscription` field
+- Create USE link: `GqlQuery/Mutation/Subscription` → `GraphQLQuery/Mutation/Subscription` field
 
 **Example:** Client query "GetUsers" selecting field "users" → links to schema's `Query.users` field
 

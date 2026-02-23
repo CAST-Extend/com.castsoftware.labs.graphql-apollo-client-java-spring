@@ -61,8 +61,8 @@ class TestLocalKb(unittest.TestCase):
         print("engine = {}".format(engine))
         server = Server(engine)
         print("server = {}".format(server))
-        kb = server.get_schema('largegraphqlapp_local')
-        application = kb.get_application('LargeGraphQLApp')
+        kb = server.get_schema('testgraphqlapp_local')
+        application = kb.get_application('TestGraphQLApp')
         print("type(app) = {}".format(type(application)))
         clientqueries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientQuery')
         clientmutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientMutation')
@@ -73,13 +73,13 @@ class TestLocalKb(unittest.TestCase):
 
         # print(clientqueries)
         # print(clientmutations)
-        # query = clientqueries[0]
-        # mutation = clientmutations[0]
+        query = clientqueries[0]
+        mutation = clientmutations[0]
         # queryrequest = queryrequests[0]
-        # mutationrequest = mutationrequests[0]
+        mutationrequest = mutationrequests[0]
         # reactJSFunctionComponent = reactJSFunctionComponents[0]
         # Fetch CAST_Java_AnnotationMetrics.Annotation for each method
-        print("\n=== GraphQLClientQuery ===")
+        print("\n=== GqlQuery ===")
         for idx, request in enumerate(clientqueries, start=1):
             print("\n=== ClientQuery {} ===".format(idx))
             print("Name: {}".format(request.get_name()))
@@ -87,7 +87,7 @@ class TestLocalKb(unittest.TestCase):
             # To get all properties for debugging:
             self.debug_print_all_object_properties(request)
 
-        print("\n=== GraphQLClientMutation ===")
+        print("\n=== GqlMutation ===")
         for idx, request in enumerate(clientmutations, start=1):
             print("\n=== ClientMutation {} ===".format(idx))
             print("Name: {}".format(request.get_name()))
@@ -95,7 +95,7 @@ class TestLocalKb(unittest.TestCase):
             # To get all properties for debugging:
             self.debug_print_all_object_properties(request)
 
-        print("\n=== GraphQLQueryRequest ===")
+        print("\n=== GraphQLApolloHookQuery ===")
         for idx, request in enumerate(queryrequests, start=1):
             print("\n=== QueryRequest {} ===".format(idx))
             print("Name: {}".format(request.get_name()))
@@ -103,7 +103,7 @@ class TestLocalKb(unittest.TestCase):
             # To get all properties for debugging:
             self.debug_print_all_object_properties(request)
 
-        print("\n=== GraphQLMutationRequest ===")
+        print("\n=== GraphQLApolloHookMutation ===")
         for idx, request in enumerate(mutationrequests, start=1):
             print("\n=== MutationRequest {} ===".format(idx))
             print("Name: {}".format(request.get_name()))
@@ -262,11 +262,11 @@ class TestLocalKb(unittest.TestCase):
                                         
                                         # Déterminer le type d'opération attendu basé sur le client_def
                                         expected_annotation = None
-                                        if client_def.get_type() == 'GraphQLClientQuery':
+                                        if client_def.get_type() == 'GqlQuery':
                                             expected_annotation = '@QueryMapping'
-                                        elif client_def.get_type() == 'GraphQLClientMutation':
+                                        elif client_def.get_type() == 'GqlMutation':
                                             expected_annotation = '@MutationMapping'
-                                        elif client_def.get_type() == 'GraphQLClientSubscription':
+                                        elif client_def.get_type() == 'GqlSubscription':
                                             expected_annotation = '@SubscriptionMapping'
                                         
                                         has_graphql_annotation = any(expected_annotation in str(ann) for ann in annotations) if annotations and expected_annotation else False
