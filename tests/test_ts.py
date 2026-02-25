@@ -297,6 +297,7 @@ export default LambdaManager;
 
         gql_symbol = module.get_symbol('TEST_GQL_IN_FUNCTION', _type=GqlDefinitionSymbol)
         gql_symbol_parent = gql_symbol.get_parent_symbol() if gql_symbol else None
+        gql = gql_defs[0].raw_bookmark.get_bookmark()
         # ===============================================================================
         # DEBUG: Verifier que les symbols sont bien crees
         # ===============================================================================
@@ -873,11 +874,15 @@ export default LambdaTypedOutline;
         # Use new analysis structure like Vue.js tests
         apollo_analysis_results = analyse(module)
         ast = module.get_ast()
-        if ast:
-            ast.print_tree()
+        # if ast:
+        #     ast.print_tree()
 
         # Get hooks for this file
         hooks = apollo_analysis_results.apollo_hooks_by_file[module.get_path()]
+
+        # Get caches for backward compatibility with print summary
+        [gql_cache, hooks_cache] = apollo_analysis_results.get_cache_dicts()
+        self.print_apollo_analysis_summary("test_typed_document_node_outline_03", gql_cache, hooks_cache, module)
 
         # Test useQuery hook with TypedDocumentNode
         query_hooks = [h for h in hooks if h.hook_name == 'useQuery' and h.operation_name == 'GET_LAMBDA_INVOCATIONS']
@@ -1062,6 +1067,26 @@ export default LambdaTypedAs;
         if ast:
             ast.print_tree()
 
+        # ── GQL definitions (Bug 3 regression guard) ───────────────────────────
+        gql_defs = apollo_analysis_results.gql_definitions_by_file[module.get_path()]
+        self.assertEqual(len(gql_defs), 3, "Should find 3 GQL definitions for the as-cast pattern")
+
+        query_defs = [d for d in gql_defs if d.name == 'GET_LAMBDA_INVOCATIONS']
+        self.assertTrue(len(query_defs) > 0, "Should find GQL definition for GET_LAMBDA_INVOCATIONS")
+        self.assertEqual(query_defs[0].operation_name, 'GetLambdaInvocations')
+        self.assertEqual(query_defs[0].operation_type, 'query')
+
+        mutation_defs = [d for d in gql_defs if d.name == 'INVOKE_LAMBDA']
+        self.assertTrue(len(mutation_defs) > 0, "Should find GQL definition for INVOKE_LAMBDA")
+        self.assertEqual(mutation_defs[0].operation_name, 'InvokeLambda')
+        self.assertEqual(mutation_defs[0].operation_type, 'mutation')
+
+        subscription_defs = [d for d in gql_defs if d.name == 'ON_LAMBDA_RESULT']
+        self.assertTrue(len(subscription_defs) > 0, "Should find GQL definition for ON_LAMBDA_RESULT")
+        self.assertEqual(subscription_defs[0].operation_name, 'OnLambdaInvocationResult')
+        self.assertEqual(subscription_defs[0].operation_type, 'subscription')
+
+        # ── Apollo hooks ────────────────────────────────────────────────────────
         # Get hooks for this file
         hooks = apollo_analysis_results.apollo_hooks_by_file[module.get_path()]
 
@@ -1088,12 +1113,6 @@ export default LambdaTypedAs;
         self.assertTrue(isinstance(subscription_hook, ApolloHookObject))
         self.assertEqual(subscription_hook.hook_name, 'useSubscription')
         self.assertEqual(subscription_hook.operation_name, 'ON_LAMBDA_RESULT')
-
-        # for m_c in get_descendants(module.get_ast(), MethodCall):
-        #     if m_c.get_name() == 'invoke':
-        #         invoke_m_c = m_c
-        #         break
-        # self.assertTrue(RawBookmark(invoke_m_c, module) == invoke.raw_bookmark)
 
 
     def test_typed_document_node_as_cast_05(self):
@@ -1906,6 +1925,193 @@ export default LambdaCodegen;
         #         invoke_m_c = m_c
         #         break
         # self.assertTrue(RawBookmark(invoke_m_c, module) == invoke.raw_bookmark)
+
+
+    def test_advanced_patterns_09(self):
+        """
+        MODULE 9 — Patterns avancés : as-cast, useMemo wrapper, import-type cast
+
+        Couvre les corrections apportées par les Bug 3/4/5 fixes :
+          - Bug 3 : `const X = gql\`...\` as TypedDocumentNode<...>` → GQL def créée
+          - Bug 3 : `const X = gql\`...\` as import('...').type` → GQL def créée
+          - Bug 3+4 : `const X = useMemo(() => gql\`...\` as TypedDocumentNode<...>, [])` → GQL def créée
+          - Bug 5 : `useHook(useMemo(() => gql\`...\`, [dep]))` → aucun hook créé (pas de faux objet)
+        """
+
+        module = SourceFile('module.ts', text="""\
+/**
+ * MODULE 9 — Patterns avancés
+ */
+
+import React, { useMemo } from 'react';
+import { gql, useQuery, useMutation, useSubscription, useLazyQuery } from '@apollo/client';
+import { TypedDocumentNode } from '@graphql-typed-document-node/core';
+
+// ─── Pattern 1 : gql`...` as TypedDocumentNode<...> (Bug 3) ─────────────────
+
+const POST_UPDATED = gql`
+  subscription PostUpdated {
+    postUpdated {
+      id
+      title
+      content
+    }
+  }
+` as TypedDocumentNode<{ postUpdated: { id: string; title: string; content: string } }>
+
+const POST_PUBLISHED = gql`
+  subscription PostPublished {
+    postPublished {
+      id
+      title
+      author {
+        name
+      }
+    }
+  }
+` as TypedDocumentNode<{ postPublished: { id: string; title: string; author: { name: string } } }>
+
+const LATEST_POST_QUERY = gql`
+  query LatestPostQuery($id: ID!) {
+    author(where: { id: $id }) {
+      id
+      posts(orderBy: { publishDate: desc }, take: 1) {
+        id
+        title
+      }
+    }
+  }
+` as TypedDocumentNode<{ author: { id: string; posts: { id: string; title: string }[] } }>
+
+// ─── Pattern 2 : useMemo wrapper with as-cast (Bug 3) ───────────────────────
+
+const LIST_COUNTS_QUERY = useMemo(
+  () =>
+    gql`
+      query KsFetchListCounts {
+        items: listCount
+      }
+    ` as TypedDocumentNode<{ items: number | null }>,
+  []
+)
+
+// ─── Pattern 3 : useHook(useMemo(...)) — should produce 0 hooks (Bug 5) ─────
+
+const DataComponent: React.FC<{ labelField: string }> = ({ labelField }) => {
+  // useMemo passed directly as first arg — no intermediate variable.
+  // After Bug 5 fix this must NOT create a `useQuery:useMemo` object.
+  const { data: authData } = useQuery<{ authenticatedItem: { label: string } | null }>(
+    useMemo(
+      () => gql`
+        query KsAuthFetchSession {
+          authenticatedItem {
+            label: name
+          }
+        }
+      `,
+      [labelField]
+    )
+  )
+
+  // ─── Hooks for outline patterns ────────────────────────────────────────────
+
+  const { data: updatedData } = useSubscription(POST_UPDATED, {
+    onData: ({ data }) => console.log(data)
+  })
+
+  const { data: publishedData } = useSubscription(POST_PUBLISHED, {
+    onData: ({ data }) => console.log(data)
+  })
+
+  const { data: latestPost } = useQuery(LATEST_POST_QUERY, {
+    variables: { id: '1' }
+  })
+
+  const { data: counts } = useQuery(LIST_COUNTS_QUERY as any)
+
+  return <div>{JSON.stringify(updatedData)}</div>
+}
+
+export default DataComponent
+""")
+
+        apollo_analysis_results = analyse(module)
+
+        gql_defs = apollo_analysis_results.gql_definitions_by_file[module.get_path()]
+        hooks = apollo_analysis_results.apollo_hooks_by_file[module.get_path()]
+
+        [gql_cache, hooks_cache] = apollo_analysis_results.get_cache_dicts()
+        self.print_apollo_analysis_summary("test_advanced_patterns_09", gql_cache, hooks_cache, module)
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # GQL definitions — Bug 3 : `as TypedDocumentNode<...>` cast
+        # ═══════════════════════════════════════════════════════════════════════
+
+        sub_updated_defs = [d for d in gql_defs if d.name == 'POST_UPDATED']
+        self.assertTrue(len(sub_updated_defs) > 0,
+                        "Bug3: should create GQL def for POST_UPDATED (as-cast pattern)")
+        self.assertEqual(sub_updated_defs[0].operation_name, 'PostUpdated')
+        self.assertEqual(sub_updated_defs[0].operation_type, 'subscription')
+
+        sub_published_defs = [d for d in gql_defs if d.name == 'POST_PUBLISHED']
+        self.assertTrue(len(sub_published_defs) > 0,
+                        "Bug3: should create GQL def for POST_PUBLISHED (as-cast pattern)")
+        self.assertEqual(sub_published_defs[0].operation_name, 'PostPublished')
+        self.assertEqual(sub_published_defs[0].operation_type, 'subscription')
+
+        latest_post_defs = [d for d in gql_defs if d.name == 'LATEST_POST_QUERY']
+        self.assertTrue(len(latest_post_defs) > 0,
+                        "Bug3: should create GQL def for LATEST_POST_QUERY (as-cast pattern)")
+        self.assertEqual(latest_post_defs[0].operation_name, 'LatestPostQuery')
+        self.assertEqual(latest_post_defs[0].operation_type, 'query')
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # GQL definitions — Bug 3 : useMemo wrapper with as-cast
+        # ═══════════════════════════════════════════════════════════════════════
+
+        list_counts_defs = [d for d in gql_defs if d.name == 'LIST_COUNTS_QUERY']
+        self.assertTrue(len(list_counts_defs) > 0,
+                        "Bug3: should create GQL def for LIST_COUNTS_QUERY (useMemo + as-cast)")
+        self.assertEqual(list_counts_defs[0].operation_name, 'KsFetchListCounts')
+        self.assertEqual(list_counts_defs[0].operation_type, 'query')
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Hooks — outline useSubscription / useQuery linked to as-cast defs
+        # ═══════════════════════════════════════════════════════════════════════
+
+        hooks_updated = [h for h in hooks if h.hook_name == 'useSubscription'
+                         and h.operation_name == 'POST_UPDATED']
+        self.assertTrue(len(hooks_updated) > 0,
+                        "Should find useSubscription hook for POST_UPDATED")
+        self.assertIsNotNone(hooks_updated[0].gql_definition,
+                             "useLink: hook should be linked to the POST_UPDATED GQL definition")
+
+        hooks_published = [h for h in hooks if h.hook_name == 'useSubscription'
+                           and h.operation_name == 'POST_PUBLISHED']
+        self.assertTrue(len(hooks_published) > 0,
+                        "Should find useSubscription hook for POST_PUBLISHED")
+        self.assertIsNotNone(hooks_published[0].gql_definition,
+                             "useLink: hook should be linked to the POST_PUBLISHED GQL definition")
+
+        hooks_latest = [h for h in hooks if h.hook_name == 'useQuery'
+                        and h.operation_name == 'LATEST_POST_QUERY']
+        self.assertTrue(len(hooks_latest) > 0,
+                        "Should find useQuery hook for LATEST_POST_QUERY")
+        self.assertIsNotNone(hooks_latest[0].gql_definition,
+                             "useLink: hook should be linked to the LATEST_POST_QUERY GQL definition")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Bug 5 : useQuery(useMemo(...)) must NOT produce a hook object
+        # ═══════════════════════════════════════════════════════════════════════
+
+        bad_hooks = [h for h in hooks if h.operation_name == 'useMemo']
+        self.assertEqual(len(bad_hooks), 0,
+                         "Bug5: useQuery(useMemo(...)) must not create a 'useQuery:useMemo' object")
+
+        # The KsAuthFetchSession hook (inline useMemo as arg) is not supported — no hook expected.
+        auth_hooks = [h for h in hooks if h.operation_name == 'KsAuthFetchSession']
+        self.assertEqual(len(auth_hooks), 0,
+                         "Bug5: useQuery(useMemo(...)) with dynamic gql is not supported — no hook expected")
 
 
 if __name__ == "__main__":

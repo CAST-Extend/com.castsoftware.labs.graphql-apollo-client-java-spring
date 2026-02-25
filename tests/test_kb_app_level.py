@@ -61,14 +61,18 @@ class TestLocalKb(unittest.TestCase):
         print("engine = {}".format(engine))
         server = Server(engine)
         print("server = {}".format(server))
-        kb = server.get_schema('testgraphqlapp_local')
-        application = kb.get_application('TestGraphQLApp')
+        kb = server.get_schema('testtsgql_local')
+        application = kb.get_application('TestTSgql')
         print("type(app) = {}".format(type(application)))
-        clientqueries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientQuery')
-        clientmutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLClientMutation')
-        queryrequests = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLQueryRequest')
-        mutationrequests = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLMutationRequest')
-        reactJSFunctionComponents = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'CAST_ReactJS_Function_Component')
+        gql_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlQuery')
+        gql_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlMutation')
+        gql_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlSubscription')
+        hook_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookQuery')
+        hook_lazy_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookLazyQuery')
+        hook_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookMutation')
+        hook_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookSubscription')
+
+
 
 
         # print(clientqueries)

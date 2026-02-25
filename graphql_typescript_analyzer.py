@@ -75,6 +75,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Track definitions for linking (LEVEL 2 -> LEVEL 1)
         self.gql_definitions = {}  # Map variable name to KB object
         self.source_file_counter = 0
+
+        # Pending useLinks: hooks processed before their GQL definition file (Bug 2)
+        self.pending_links = []  # List of (request_obj, operation_name)
         
         # Track created/failed objects for end-of-analysis summary
         # Each entry: {'name': str, 'type': str, 'file_path': str}
@@ -342,9 +345,8 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 except Exception as link_ex:
                     log.warning('[GraphQL TS Client]     ✗ Failed to create USES link: ' + str(link_ex))
             else:
-                log.info('[GraphQL TS Client]     ✗ Client definition not found: "' + operation_name + '"')
-                log.info('[GraphQL TS Client]         This is expected for inline gql definitions')
-                log.info('[GraphQL TS Client]         Inline case: hook references the GraphQL operation name directly')
+                log.info('[GraphQL TS Client]     ✗ Client definition not found yet: "' + operation_name + '" — queued for retry (Bug 2)')
+                self.pending_links.append((request_obj, operation_name))
             
             log.info('[GraphQL TS Client] ✓ Created ' + object_type + ': ' + operation_name)
             self.created_objects.append({'name': unique_request_name, 'type': object_type, 'file_path': file_path})
@@ -362,6 +364,21 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         This is called when all TypeScript files have been processed.
         We use this to display final statistics.
         """
+        # Bug 2 fix: resolve pending useLinks for cross-file GQL definitions
+        if self.pending_links:
+            log.info('[GraphQL TS Client] Resolving ' + str(len(self.pending_links)) + ' pending useLink(s)...')
+            for (request_obj, operation_name) in self.pending_links:
+                if operation_name in self.gql_definitions:
+                    client_obj = self.gql_definitions[operation_name]
+                    try:
+                        create_link("useLink", request_obj, client_obj)
+                        log.info('[GraphQL TS Client]   ✓ Resolved pending useLink: ' + operation_name)
+                    except Exception as link_ex:
+                        log.warning('[GraphQL TS Client]   ✗ Could not resolve pending useLink for "' + operation_name + '": ' + str(link_ex))
+                else:
+                    log.info('[GraphQL TS Client]   ✗ Still unresolved: "' + operation_name + '" (definition not found in any file)')
+            self.pending_links = []  # free memory — on_end is the real finish point
+
         log.info('[GraphQL TS Client] ================================================')
         log.info('[GraphQL TS Client] === END OF ANALYSIS SUMMARY ===')
         log.info('[GraphQL TS Client] Total TypeScript files analyzed: ' + str(self.source_file_counter))

@@ -4,7 +4,7 @@ This module stores the results of Apollo Client analysis, similar to vue_analysi
 """
 try:
     import traceback
-    from cast.analysers import log, CustomObject
+    from cast.analysers import log, CustomObject, Bookmark
     from collections import OrderedDict
     from ts_parser.apollo_symbols import ApolloHookObject, ApolloClientMethodObject
 except:
@@ -71,8 +71,19 @@ class RawBookmark:
 
     def get_bookmark(self):
         try:
-            return self.ast.create_bookmark(self.module)
-        except:
+            if self.ast.get_begin_line() is not None:
+                return Bookmark(self.module.get_file(), 
+                                self.ast.get_begin_line(), 
+                                self.ast.get_begin_column(), 
+                                self.ast.get_end_line(), 
+                                self.ast.get_end_column()+1)
+            else:
+                log.warning('[RawBookmark] get_bookmark() missing line/column info for AST node: ' + str(self.ast))
+                return None
+        except Exception as e:
+            log.warning('[RawBookmark] get_bookmark() exception: ' + str(e))
+            import traceback as _tb
+            log.warning(_tb.format_exc())
             return None
 
     def __eq__(self, other):
