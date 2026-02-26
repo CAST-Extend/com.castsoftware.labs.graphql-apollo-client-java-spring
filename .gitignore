@@ -8,10 +8,13 @@ __pycache__/
 *.log
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
 ressources/
+big_app_test/
+small_app_test/
 .github/
 __init__.py
 CLAUDE.md

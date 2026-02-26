@@ -662,24 +662,24 @@ class TypeInference:
             # debugging
             if False:
                 # @type group: AliasGroup
-                print('AliasGroup')
+                log.info('AliasGroup')
                 for variable in group.variables:
-                    print('   ', variable)
-                print('  Possibles')
+                    log.info('   ', variable)
+                log.info('  Possibles')
                 for _type in group.possible_types:
-                    # print('   ', _type.get_qualified_name())
-                    print('   ', _type.get_name())
-                print('  Methods')
+                    # log.info('   ', _type.get_qualified_name())
+                    log.info('   ', _type.get_name())
+                log.info('  Methods')
                 for method in group.called_method_names:
-                    print('   ', method)
-                print('  Sures')
+                    log.info('   ', method)
+                log.info('  Sures')
                 for _type in group.sure_types:
-                    # print('   ', _type.get_qualified_name())
-                    print('   ', _type.get_name())
-#             print('  Contains parameter ?', group.contains_parameter())
-                print('  Calls')
+                    # log.info('   ', _type.get_qualified_name())
+                    log.info('   ', _type.get_name())
+#             log.info('  Contains parameter ?', group.contains_parameter())
+                log.info('  Calls')
                 for call in group.calls:
-                    print('   ', call)
+                    log.info('   ', call)
 
             if group.is_sure() and group.sure_types:
                 # we do not have assignment from
@@ -708,7 +708,7 @@ def apply_types_to_calls(calls, types):
 #                     resolution.get_ast().remove_caller(call)
 #                 except:
 #                     pass
-#                     print("  **Some issue ...")
+#                     log.info("  **Some issue ...")
 #                     raise
 #                     # should not happen as it called should be a function
 #                     log.debug('Issue in end_MethodCall for token %s' % str(call))
@@ -724,7 +724,7 @@ def apply_types_to_calls(calls, types):
 #                 except:
 #                     # should not happen as it called should be a function
 #                     log.debug('Issue in end_MethodCall for token %s' % str(call))
-#                     print("Some issue ...")
+#                     log.info("Some issue ...")
 
 
 def is_formal_parameter(node):
