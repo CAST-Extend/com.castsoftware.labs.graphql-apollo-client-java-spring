@@ -226,6 +226,13 @@
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
+	<type name="GqlUnresolvedDefinition" rid="31">
+		<description>Unresolved GQL definition</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
 	<!-- GraphQL Apollo Hook Requests - LEVEL 2: hook usage -->
 	<type name="GraphQLApolloHookQuery" rid="25">
 		<description>Apollo useQuery Hook Call</description>

@@ -77,8 +77,11 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         self.source_file_counter = 0
 
         # Pending useLinks: hooks processed before their GQL definition file (Bug 2)
-        self.pending_links = []  # List of (request_obj, operation_name)
-        
+        self.pending_links = []  # List of (request_obj, operation_name, caller_file_kb)
+
+        # Dedup cache for GqlUnresolvedDefinition objects (keyed by operation_name)
+        self.missing_gql_objects = {}
+
         # Track created/failed objects for end-of-analysis summary
         # Each entry: {'name': str, 'type': str, 'file_path': str}
         self.created_objects = []
@@ -346,7 +349,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     log.warning('[GraphQL TS Client]     ✗ Failed to create USES link: ' + str(link_ex))
             else:
                 log.info('[GraphQL TS Client]     ✗ Client definition not found yet: "' + operation_name + '" — queued for retry (Bug 2)')
-                self.pending_links.append((request_obj, operation_name))
+                self.pending_links.append((request_obj, operation_name, source_file.get_kb_object()))
             
             log.info('[GraphQL TS Client] ✓ Created ' + object_type + ': ' + operation_name)
             self.created_objects.append({'name': unique_request_name, 'type': object_type, 'file_path': file_path})
@@ -356,6 +359,35 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             log.warning(traceback.format_exc())
             self.failed_objects.append({'name': _track_name, 'type': _track_type, 'file_path': _track_file})
     
+    def _create_missing_gql_definition(self, request_obj, operation_name, caller_file_kb):
+        """
+        Create (or reuse) a GqlUnresolvedDefinition object for a hook whose GQL definition
+        was never found in any analyzed file.
+
+        Deduplication: one object per operation_name regardless of how many hooks reference it.
+        All hooks get a useLink to the same object.
+        """
+        try:
+            if operation_name not in self.missing_gql_objects:
+                missing_obj = CustomObject()
+                missing_obj.set_type('GqlUnresolvedDefinition')
+                missing_obj.set_name(operation_name)
+                missing_obj.set_fullname('[missing]:' + operation_name)
+                if caller_file_kb:
+                    missing_obj.set_parent(caller_file_kb)
+                missing_obj.save()
+                self.missing_gql_objects[operation_name] = missing_obj
+                log.info('[GraphQL TS Client] Created GqlUnresolvedDefinition: ' + operation_name)
+                self.created_objects.append({'name': operation_name, 'type': 'GqlUnresolvedDefinition', 'file_path': str(caller_file_kb)})
+            else:
+                missing_obj = self.missing_gql_objects[operation_name]
+                log.info('[GraphQL TS Client] Reusing GqlUnresolvedDefinition: ' + operation_name)
+            create_link("useLink", request_obj, missing_obj)
+            log.info('[GraphQL TS Client]   ✓ useLink: hook -> [unresolved] ' + operation_name)
+        except Exception as e:
+            log.warning('[GraphQL TS Client] Error creating GqlUnresolvedDefinition for "' + operation_name + '": ' + str(e))
+            log.warning(traceback.format_exc())
+
     @Event('com.castsoftware.typescript', 'typescript_endanalysis_completed')
     def on_end_html5_and_typescript(self, data):
         """
@@ -367,7 +399,8 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Bug 2 fix: resolve pending useLinks for cross-file GQL definitions
         if self.pending_links:
             log.info('[GraphQL TS Client] Resolving ' + str(len(self.pending_links)) + ' pending useLink(s)...')
-            for (request_obj, operation_name) in self.pending_links:
+            still_unresolved = []
+            for (request_obj, operation_name, caller_file_kb) in self.pending_links:
                 if operation_name in self.gql_definitions:
                     client_obj = self.gql_definitions[operation_name]
                     try:
@@ -376,7 +409,10 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     except Exception as link_ex:
                         log.warning('[GraphQL TS Client]   ✗ Could not resolve pending useLink for "' + operation_name + '": ' + str(link_ex))
                 else:
-                    log.info('[GraphQL TS Client]   ✗ Still unresolved: "' + operation_name + '" (definition not found in any file)')
+                    log.info('[GraphQL TS Client]   ✗ Still unresolved: "' + operation_name + '" — creating GqlUnresolvedDefinition')
+                    still_unresolved.append((request_obj, operation_name, caller_file_kb))
+            for (request_obj, operation_name, caller_file_kb) in still_unresolved:
+                self._create_missing_gql_definition(request_obj, operation_name, caller_file_kb)
             self.pending_links = []  # free memory — on_end is the real finish point
 
         log.info('[GraphQL TS Client] ================================================')
@@ -417,15 +453,12 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         else:
             log.info('[GraphQL TS Client]   (none)')
         
-        log.info('[GraphQL TS Client] ================================================')
-    
-    def finish(self):
-        """Clean up at end of analysis."""
         log.info('[GraphQL TS Client] === FINISH: Cleanup ===')
         log.info('[GraphQL TS Client] Processed ' + str(self.source_file_counter) + ' TypeScript files total')
         log.info('[GraphQL TS Client] Created ' + str(len(self.gql_definitions)) + ' gql definitions')
         
         self.gql_definitions = {}
+        self.missing_gql_objects = {}
         self.source_file_counter = 0
         self.created_objects = []
         self.failed_objects = []

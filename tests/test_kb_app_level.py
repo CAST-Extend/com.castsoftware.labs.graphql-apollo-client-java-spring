@@ -66,11 +66,11 @@ class TestLocalKb(unittest.TestCase):
         print("type(app) = {}".format(type(application)))
         gql_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlQuery')
         gql_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlMutation')
-        gql_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlSubscription')
-        hook_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookQuery')
-        hook_lazy_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookLazyQuery')
-        hook_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookMutation')
-        hook_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookSubscription')
+        # gql_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlSubscription')
+        # hook_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookQuery')
+        # hook_lazy_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookLazyQuery')
+        # hook_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookMutation')
+        # hook_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookSubscription')
 
 
 
