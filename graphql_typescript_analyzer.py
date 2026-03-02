@@ -73,7 +73,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         log.info('[GraphQL TS Client] ========================================')
         
         # Track definitions for linking (LEVEL 2 -> LEVEL 1)
-        self.gql_definitions = {}  # Map variable name to KB object
+        self.gql_definitions = {}  # Map operation_name -> KB object (e.g. "GetLambdaInvocations" -> CustomObject)
         self.source_file_counter = 0
 
         # Pending useLinks: hooks processed before their GQL definition file (Bug 2)
@@ -81,6 +81,10 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
 
         # Dedup cache for GqlUnresolvedDefinition objects (keyed by operation_name)
         self.missing_gql_objects = {}
+
+        # Map variable_name -> kb_name (operation_name) for hook lookup resolution.
+        # Populated by _create_gql_definition(); first-seen wins on collision (outer scope wins).
+        self.var_name_to_op_name = {}
 
         # Track created/failed objects for end-of-analysis summary
         # Each entry: {'name': str, 'type': str, 'file_path': str}
@@ -164,22 +168,29 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 object_type = 'GqlQuery'  # fallback
             
             variable_name = gql_def.name
-            _track_name = variable_name
+            # Use the GQL operation name as the KB object name (e.g. "GetLambdaInvocations").
+            # This is globally unique (GQL spec), avoids CAST dedup collisions when the same
+            # variable name (e.g. "QUERY") is declared in multiple scopes of the same file,
+            # and makes schema matching trivial: operation_name == field in type Query/Mutation/Subscription.
+            # Fall back to variable_name only for anonymous gql templates (no parsed operation name).
+            kb_name = gql_def.operation_name or variable_name
+            _track_name = kb_name
             _track_type = object_type
-            
+
             # Step 2: Build unique fullname (file:line format, same as JS analyzer)
             file_path = str(source_file.get_path())
             line_num = gql_def.raw_bookmark.ast.get_begin_line() if gql_def.raw_bookmark and gql_def.raw_bookmark.ast else 0
             fullname = file_path + ':' + str(line_num)
-            
-            log.info('[GraphQL TS Client] Creating ' + object_type + ': ' + variable_name)
+
+            log.info('[GraphQL TS Client] Creating ' + object_type + ': ' + kb_name +
+                     ' (var=' + variable_name + ')')
             log.info('[GraphQL TS Client]   - Fullname: ' + fullname)
             log.info('[GraphQL TS Client]   - Operation: ' + str(gql_def.operation_name))
             
             # Step 3: Create CAST custom object
             client_obj = CustomObject()
             client_obj.set_type(object_type)
-            client_obj.set_name(variable_name)
+            client_obj.set_name(kb_name)
             client_obj.set_fullname(fullname)
             
             # Step 4: Set parent (file-level KB object)
@@ -215,13 +226,22 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 log.warning('[GraphQL TS Client] Could not save bookmark: ' + str(e))
                 log.warning(traceback.format_exc())
             
-            # Step 8: Store in cache for LEVEL 2 linking
+            # Step 8: Store in cache for LEVEL 2 linking (keyed by operation name).
+            # Also record variable_name -> kb_name mapping so hook lookup can resolve
+            # useQuery(VAR_NAME) -> self.gql_definitions[operation_name].
+            # First-seen wins on variable name collision (outer scope takes priority).
             log.info('[GraphQL TS Client] >>> Storing definition in cache')
-            log.info('[GraphQL TS Client]     KEY: "' + variable_name + '"')
-            self.gql_definitions[variable_name] = client_obj
+            log.info('[GraphQL TS Client]     KEY: "' + kb_name + '" (var="' + variable_name + '")')
+            self.gql_definitions[kb_name] = client_obj
+            if variable_name not in self.var_name_to_op_name:
+                self.var_name_to_op_name[variable_name] = kb_name
+            else:
+                log.warning('[GraphQL TS Client]   - Variable name collision: "' + variable_name +
+                            '" already maps to "' + self.var_name_to_op_name[variable_name] +
+                            '"; new op "' + kb_name + '" stored in cache but hook lookup will use first')
             log.info('[GraphQL TS Client]     Cache now contains ' + str(len(self.gql_definitions)) + ' definition(s)')
-            log.info('[GraphQL TS Client] ✓ Created ' + object_type + ': ' + variable_name)
-            self.created_objects.append({'name': variable_name, 'type': object_type, 'file_path': file_path})
+            log.info('[GraphQL TS Client] ✓ Created ' + object_type + ': ' + kb_name)
+            self.created_objects.append({'name': kb_name, 'type': object_type, 'file_path': file_path})
             
         except Exception as e:
             log.warning('[GraphQL TS Client] Error creating definition: ' + str(e))
@@ -334,21 +354,26 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 log.warning('[GraphQL TS Client] Could not create bookmark/link: ' + str(e))
                 log.warning(traceback.format_exc())
             
-            # Step 9: Create USES link (request -> client definition)
+            # Step 9: Create USES link (request -> client definition).
+            # hook.operation_name is the variable name (e.g. "GET_LAMBDA_INVOCATIONS").
+            # self.gql_definitions is now keyed by operation name (e.g. "GetLambdaInvocations").
+            # var_name_to_op_name translates variable name -> operation name.
+            lookup_key = self.var_name_to_op_name.get(operation_name, operation_name)
             log.info('[GraphQL TS Client] >>> Searching for client definition')
-            log.info('[GraphQL TS Client]     SEARCHING FOR: "' + operation_name + '"')
+            log.info('[GraphQL TS Client]     VAR: "' + operation_name + '" -> KEY: "' + lookup_key + '"')
             log.info('[GraphQL TS Client]     AVAILABLE KEYS: ' + str(list(self.gql_definitions.keys())))
-            
-            if operation_name in self.gql_definitions:
-                client_obj = self.gql_definitions[operation_name]
+
+            if lookup_key in self.gql_definitions:
+                client_obj = self.gql_definitions[lookup_key]
                 log.info('[GraphQL TS Client]     ✓ Found client definition: ' + str(client_obj))
                 try:
                     create_link("useLink", request_obj, client_obj)
-                    log.info('[GraphQL TS Client]     ✓ Created USES link: ' + unique_request_name + ' -> ' + operation_name)
+                    log.info('[GraphQL TS Client]     ✓ Created USES link: ' + unique_request_name + ' -> ' + lookup_key)
                 except Exception as link_ex:
                     log.warning('[GraphQL TS Client]     ✗ Failed to create USES link: ' + str(link_ex))
             else:
-                log.info('[GraphQL TS Client]     ✗ Client definition not found yet: "' + operation_name + '" — queued for retry (Bug 2)')
+                log.info('[GraphQL TS Client]     ✗ Client definition not found yet: var="' + operation_name +
+                         '" key="' + lookup_key + '" — queued for retry (Bug 2)')
                 self.pending_links.append((request_obj, operation_name, source_file.get_kb_object()))
             
             log.info('[GraphQL TS Client] ✓ Created ' + object_type + ': ' + operation_name)
@@ -401,15 +426,19 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             log.info('[GraphQL TS Client] Resolving ' + str(len(self.pending_links)) + ' pending useLink(s)...')
             still_unresolved = []
             for (request_obj, operation_name, caller_file_kb) in self.pending_links:
-                if operation_name in self.gql_definitions:
-                    client_obj = self.gql_definitions[operation_name]
+                # operation_name here is the variable name stored at queue time.
+                # Resolve through var_name_to_op_name to get the KB cache key.
+                lookup_key = self.var_name_to_op_name.get(operation_name, operation_name)
+                if lookup_key in self.gql_definitions:
+                    client_obj = self.gql_definitions[lookup_key]
                     try:
                         create_link("useLink", request_obj, client_obj)
-                        log.info('[GraphQL TS Client]   ✓ Resolved pending useLink: ' + operation_name)
+                        log.info('[GraphQL TS Client]   ✓ Resolved pending useLink: var="' + operation_name + '" -> "' + lookup_key + '"')
                     except Exception as link_ex:
-                        log.warning('[GraphQL TS Client]   ✗ Could not resolve pending useLink for "' + operation_name + '": ' + str(link_ex))
+                        log.warning('[GraphQL TS Client]   ✗ Could not resolve pending useLink for "' + lookup_key + '": ' + str(link_ex))
                 else:
-                    log.info('[GraphQL TS Client]   ✗ Still unresolved: "' + operation_name + '" — creating GqlUnresolvedDefinition')
+                    log.info('[GraphQL TS Client]   ✗ Still unresolved: var="' + operation_name +
+                             '" key="' + lookup_key + '" — creating GqlUnresolvedDefinition')
                     still_unresolved.append((request_obj, operation_name, caller_file_kb))
             for (request_obj, operation_name, caller_file_kb) in still_unresolved:
                 self._create_missing_gql_definition(request_obj, operation_name, caller_file_kb)
@@ -458,6 +487,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         log.info('[GraphQL TS Client] Created ' + str(len(self.gql_definitions)) + ' gql definitions')
         
         self.gql_definitions = {}
+        self.var_name_to_op_name = {}
         self.missing_gql_objects = {}
         self.source_file_counter = 0
         self.created_objects = []
