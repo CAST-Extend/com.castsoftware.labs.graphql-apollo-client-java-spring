@@ -18,3 +18,4 @@ small_app_test/
 .github/
 __init__.py
 CLAUDE.md
+MEMORY.md

@@ -108,7 +108,8 @@ class ApolloHookObject:
     Captures the hook type, GraphQL operation name, and location in the source code.
     """
 
-    def __init__(self, hook_name, operation_name, ast_node, raw_bookmark, module):
+    def __init__(self, hook_name, operation_name, ast_node, raw_bookmark, module,
+                 source_pattern='react_hook'):
         """
         Initialize an Apollo Hook object.
 
@@ -118,12 +119,18 @@ class ApolloHookObject:
             ast_node: The AST node representing the hook call
             raw_bookmark: Position in the source code (RawBookmark instance)
             module: The parent module/caller
+            source_pattern: Origin of the hook call. One of:
+                'react_hook'    — direct useQuery/useMutation/etc. call
+                'client_method' — imperative client.query/mutate/subscribe
+                'angular_method'— Angular this.apollo.query/mutate/watchQuery
+                'codegen_hook'  — Apollo Codegen generated hook (useGetXQuery etc.)
         """
         self.hook_name = hook_name
         self.operation_name = operation_name
         self.ast_node = ast_node
         self.raw_bookmark = raw_bookmark
         self.module = module
+        self.source_pattern = source_pattern
         self.kb_symbol = None
         self.inline = None  # Set to operation name if gql is defined inline
 
@@ -145,7 +152,7 @@ class ApolloHookObject:
         return self.operation_name
 
     def __repr__(self):
-        return "ApolloHookObject({}, {})".format(self.hook_name, self.operation_name)
+        return "ApolloHookObject({}, {}, {})".format(self.hook_name, self.operation_name, self.source_pattern)
 
 
 class ApolloClientMethodObject:

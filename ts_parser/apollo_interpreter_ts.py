@@ -30,6 +30,33 @@ APOLLO_HOOKS = ['useQuery', 'useMutation', 'useSubscription', 'useLazyQuery']
 # List of Apollo Client methods (for future support)
 APOLLO_CLIENT_METHODS = ['query', 'mutate', 'subscribe']
 
+# ─── PATTERN 2: Codegen-generated typed hooks ─────────────────────────────────
+# Matches: useGetUsersQuery, useCreateUserMutation, useSubscribeSubscription, etc.
+# Pattern: use[UpperCamelCase](Query|Mutation|Subscription)
+CODEGEN_HOOK_PATTERN = re.compile(r'^use[A-Z][A-Za-z0-9]+(Query|Mutation|Subscription)$')
+
+# ─── PATTERN 3: Angular this.apollo.* calls ───────────────────────────────────
+# Maps the Apollo service method name to the normalized React hook name.
+# watchQuery → useLazyQuery (both are "lazy" / deferred execution patterns).
+ANGULAR_METHOD_TO_HOOK = {
+    'query':      'useQuery',
+    'mutate':     'useMutation',
+    'watchQuery': 'useLazyQuery',
+}
+
+# ─── PATTERN 1: Direct Apollo Client imperative calls ─────────────────────────
+# Maps client.X() method name to the normalized hook name used for KB objects.
+# Note: 'subscribe' maps to useSubscription (client.subscribe({query: X})).
+CLIENT_METHOD_TO_HOOK = {
+    'query':     'useQuery',
+    'mutate':    'useMutation',
+    'subscribe': 'useSubscription',
+}
+
+# Union of all method names handled by Patterns 1 & 3 (used in MethodCall scan).
+ALL_RECEIVER_METHODS = set(ANGULAR_METHOD_TO_HOOK) | set(CLIENT_METHOD_TO_HOOK)
+# = {'query', 'mutate', 'watchQuery', 'subscribe'}
+
 
 def analyse_ts_fragment(ts_fragment, apollo_analysis_results):
     """
@@ -673,8 +700,28 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             for func_call in func_calls:
                 try:
                     hook_name = func_call.get_name()
-                    
-                    # Check if it's an Apollo hook
+
+                    # ═══════════════════════════════════════════════════════════
+                    # PATTERN 2 — Codegen-generated typed hooks
+                    # e.g. useGetLambdaInvocationsQuery({variables: ...})
+                    #      useInvokeLambdaMutation({onCompleted: ...})
+                    #
+                    # These are wrapper functions produced by @graphql-codegen.
+                    # They match use[Name](Query|Mutation|Subscription) but are
+                    # NOT in APOLLO_HOOKS (which only has the 4 standard hooks).
+                    # The operation_name IS the hook function name itself (no arg
+                    # to extract — the document is baked into the wrapper).
+                    # ═══════════════════════════════════════════════════════════
+                    if hook_name and hook_name not in APOLLO_HOOKS:
+                        codegen_match = CODEGEN_HOOK_PATTERN.match(hook_name)
+                        if codegen_match:
+                            self._process_codegen_hook(func_call, hook_name, codegen_match)
+                            continue
+                        # Not a codegen hook and not a standard hook → skip
+                        log.info('  Skipping non-Apollo hook: {}'.format(hook_name))
+                        continue
+
+                    # Check if it's an Apollo hook (standard: useQuery etc.)
                     if hook_name not in APOLLO_HOOKS:
                         log.info('  Skipping non-Apollo hook: {}'.format(hook_name))
                         continue
@@ -783,6 +830,31 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                     log.info(traceback.format_exc())
                     continue
                     
+            # ═══════════════════════════════════════════════════════════════════
+            # PATTERN 1 — Direct Apollo Client calls: client.query({query: X})
+            # PATTERN 3 — Angular service calls:      this.apollo.query({query: X})
+            #                                         this.apollo.watchQuery({query: X})
+            #
+            # In the CAST TypeScript parser, method calls on objects (obj.method())
+            # are represented as 'MethodCall' nodes, NOT 'FunctionCall' nodes.
+            # That is why the FunctionCall scan above cannot detect them and why
+            # test 06 currently asserts 0 hooks for client.query/mutate/subscribe.
+            #
+            # We scan MethodCall nodes here using a separate call to get_descendants.
+            # ═══════════════════════════════════════════════════════════════════
+            method_calls = get_descendants(ast, 'MethodCall')
+            log.info('  Found {} MethodCall nodes for P1/P3 scan'.format(len(method_calls)))
+            for method_call in method_calls:
+                try:
+                    method_name = method_call.get_name() if hasattr(method_call, 'get_name') else None
+                    if not method_name or method_name not in ALL_RECEIVER_METHODS:
+                        continue
+                    self._process_receiver_method_call(method_call, method_name)
+                except Exception as mc_ex:
+                    log.info('  Exception in MethodCall loop: {}'.format(str(mc_ex)))
+                    log.info(traceback.format_exc())
+                    continue
+
         except Exception as e:
             log.info('Error extracting Apollo hooks: {}'.format(str(e)))
             log.info(traceback.format_exc())
@@ -911,6 +983,161 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             log.info('    extract_inline_gql: Exception: {}'.format(str(e)))
             log.info(traceback.format_exc())
             return (None, None)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PATTERN 2 helper — Codegen-generated typed hooks
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _process_codegen_hook(self, func_call, hook_name, codegen_match):
+        """
+        PATTERN 2: Create an ApolloHookObject for a codegen-generated hook call.
+
+        The hook function name itself (e.g. 'useGetLambdaInvocationsQuery') is used
+        as the operation_name since there is no GQL document argument to extract.
+        The suffix ('Query'/'Mutation'/'Subscription') determines the normalized
+        hook type stored on the object (useQuery / useMutation / useSubscription).
+
+        Examples detected:
+            useGetLambdaInvocationsQuery({ variables: ... })
+            useInvokeLambdaMutation({ onCompleted: ... })
+            useOnLambdaInvocationResultSubscription({ variables: ... })
+        """
+        suffix = codegen_match.group(1)   # 'Query', 'Mutation', or 'Subscription'
+        normalized_hook = 'use' + suffix   # 'useQuery', 'useMutation', 'useSubscription'
+        operation_name = hook_name         # e.g. 'useGetLambdaInvocationsQuery'
+
+        raw_bookmark = RawBookmark(func_call, self.module)
+        hook_obj = ApolloHookObject(
+            hook_name=normalized_hook,
+            operation_name=operation_name,
+            ast_node=func_call,
+            raw_bookmark=raw_bookmark,
+            module=self.module,
+            source_pattern='codegen_hook'
+        )
+        self.apollo_analysis_results.add_apollo_hook(hook_obj)
+        self.module.add_node_symbol(operation_name, hook_obj)
+
+        parent_symbol = self.find_parent_symbol_for_ast_node(func_call)
+        hook_symbol = ApolloHookSymbol(
+            name=operation_name,
+            parent=parent_symbol,
+            hook_name=normalized_hook,
+            operation_name=operation_name
+        )
+        hook_symbol._ast = func_call
+        parent_symbol.add_symbol(operation_name, hook_symbol)
+        if parent_symbol != self.module:
+            self.module.add_symbol(operation_name, hook_symbol)
+
+        log.info('  ✓ Codegen hook: {} -> {}'.format(hook_name, normalized_hook))
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PATTERN 1 & 3 helpers — client.X() and this.apollo.X() method calls
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _extract_gql_var_from_node_str(self, node_str, method_name):
+        """
+        Extract the GQL document variable name from the string representation of
+        a MethodCall node such as:
+            client.query({ query: GET_USERS, variables: {...} })
+            this.apollo.mutate({ mutation: CREATE_USER, ... })
+            this.apollo.watchQuery({ query: GET_USERS }).valueChanges
+
+        Strategy:
+          1. Determine the object-literal arg key expected for this method:
+               query / watchQuery / subscribe  →  look for 'query':  VAR
+               mutate                          →  look for 'mutation': VAR
+          2. In the token repr, identifiers appear as Token.Generic,'name'.
+             Scan for the arg key token followed (non-greedily) by an
+             UPPER_SNAKE_CASE identifier (which is the GQL document const name).
+          3. Reject trivially short or generic tokens (GET, SET, NULL…).
+
+        Returns the variable name string, or None if not found.
+        """
+        arg_key = 'mutation' if method_name == 'mutate' else 'query'
+        # Match: 'arg_key'  ...any chars (non-greedy)...  'UPPER_CASE_VAR'
+        pattern = r"'" + arg_key + r"'.*?'([A-Z][A-Z0-9_]{2,})'"
+        m = re.search(pattern, node_str, re.DOTALL)
+        if m:
+            candidate = m.group(1)
+            excluded = {'GET', 'SET', 'ALL', 'ANY', 'MAP', 'NULL', 'TRUE',
+                        'FALSE', 'STRING', 'INT', 'FLOAT', 'BOOLEAN', 'ID'}
+            if candidate not in excluded:
+                log.info('    Extracted GQL var: {!r} (arg_key={!r})'.format(candidate, arg_key))
+                return candidate
+        return None
+
+    def _process_receiver_method_call(self, method_call, method_name):
+        """
+        PATTERN 1 — React: client.query({query: GET_X})   → GraphQLApolloHookQuery
+                            client.mutate({mutation: DO_X}) → GraphQLApolloHookMutation
+                            client.subscribe({query: ON_X}) → GraphQLApolloHookSubscription
+
+        PATTERN 3 — Angular: this.apollo.query({query: GET_X})      → GraphQLApolloHookQuery
+                              this.apollo.mutate({mutation: DO_X})   → GraphQLApolloHookMutation
+                              this.apollo.watchQuery({query: GET_X}) → GraphQLApolloHookLazyQuery
+
+        Discrimination between the two patterns:
+          - Angular: the MethodCall string repr contains the token 'apollo'
+                     (from the 'this.apollo' receiver expression).
+          - React:   no 'apollo' token in the repr; receiver is typically 'client'.
+
+        The operation_name extracted is the GQL document const variable name
+        (e.g. 'GET_USERS'), which var_name_to_op_name will later resolve to the
+        GQL operation name (e.g. 'GetUsers') for the useLink creation.
+        """
+        node_str = str(method_call)
+
+        # ── Discriminate Angular vs React client ──────────────────────────────
+        is_angular = ("'apollo'" in node_str or '"apollo"' in node_str)
+
+        if is_angular:
+            normalized_hook = ANGULAR_METHOD_TO_HOOK.get(method_name)
+            pattern_label = 'Pattern 3 (Angular this.apollo.{})'.format(method_name)
+        else:
+            normalized_hook = CLIENT_METHOD_TO_HOOK.get(method_name)
+            pattern_label = 'Pattern 1 (client.{})'.format(method_name)
+
+        if not normalized_hook:
+            log.info('  {} — method not in map, skipping'.format(pattern_label))
+            return
+
+        # ── Extract the GQL document variable from the object arg ─────────────
+        operation_name = self._extract_gql_var_from_node_str(node_str, method_name)
+        if not operation_name:
+            log.info('  {} — could not extract GQL var, skipping'.format(pattern_label))
+            return
+
+        log.info('  {} — detected: {}:{}'.format(pattern_label, normalized_hook, operation_name))
+
+        # ── Create ApolloHookObject (same class as standard hooks) ────────────
+        raw_bookmark = RawBookmark(method_call, self.module)
+        hook_obj = ApolloHookObject(
+            hook_name=normalized_hook,
+            operation_name=operation_name,
+            ast_node=method_call,
+            raw_bookmark=raw_bookmark,
+            module=self.module,
+            source_pattern='angular_method' if is_angular else 'client_method'
+        )
+        self.apollo_analysis_results.add_apollo_hook(hook_obj)
+        self.module.add_node_symbol(operation_name, hook_obj)
+
+        parent_symbol = self.find_parent_symbol_for_ast_node(method_call)
+        hook_symbol = ApolloHookSymbol(
+            name=operation_name,
+            parent=parent_symbol,
+            hook_name=normalized_hook,
+            operation_name=operation_name
+        )
+        hook_symbol._ast = method_call
+        parent_symbol.add_symbol(operation_name, hook_symbol)
+        if parent_symbol != self.module:
+            self.module.add_symbol(operation_name, hook_symbol)
+
+        log.info('  ✓ {} hook: {} -> {}:{}'.format(
+            'Angular' if is_angular else 'Client', method_name, normalized_hook, operation_name))
 
     def create_hook_to_gql_links(self):
         """

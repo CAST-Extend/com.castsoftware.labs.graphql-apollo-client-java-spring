@@ -1420,22 +1420,33 @@ export default LambdaImperativeOutline;
         # Use new analysis structure like Vue.js tests
         apollo_analysis_results = analyse(module)
         ast = module.get_ast()
-        if ast:
-            ast.print_tree()
+        # if ast:
+        #     ast.print_tree()
 
-        # Note: client.query(), client.mutate(), client.subscribe() are imperative methods
-        # These are MethodCall, not FunctionCall like hooks
-        # Support for these is planned but not yet implemented
-        self.assertEqual(len(apollo_analysis_results.apollo_hooks_by_operation), 0, "Client imperative methods should not create symbols yet")
+        [gql_cache, hooks_cache] = apollo_analysis_results.get_cache_dicts()
+        self.print_apollo_analysis_summary("test_client_imperative_outline_06", gql_cache, hooks_cache, module)
 
-        # TODO: Future enhancement - support client.query(), client.mutate(), client.subscribe()
-        # Use ApolloClientMethodObject from apollo_symbols module
+        # Pattern 1: client.query / client.mutate / client.subscribe (MethodCall nodes with outline gql)
+        # Each call passes the document as a named const (UPPER_CASE identifier).
+        self.assertEqual(len(apollo_analysis_results.apollo_hooks_by_operation), 3,
+                         "client.query/mutate/subscribe with outline gql consts should each produce one hook operation")
 
-        # for m_c in get_descendants(module.get_ast(), MethodCall):
-        #     if m_c.get_name() == 'invoke':
-        #         invoke_m_c = m_c
-        #         break
-        # self.assertTrue(RawBookmark(invoke_m_c, module) == invoke.raw_bookmark)
+        all_hooks = [h for hooks in apollo_analysis_results.apollo_hooks_by_operation.values() for h in hooks]
+
+        query_hooks = [h for h in all_hooks if h.operation_name == 'GET_LAMBDA_INVOCATIONS']
+        self.assertEqual(len(query_hooks), 1,
+                         "client.query({query: GET_LAMBDA_INVOCATIONS}) should create a useQuery hook")
+        self.assertEqual(query_hooks[0].hook_name, 'useQuery')
+
+        mutate_hooks = [h for h in all_hooks if h.operation_name == 'INVOKE_LAMBDA']
+        self.assertEqual(len(mutate_hooks), 1,
+                         "client.mutate({mutation: INVOKE_LAMBDA}) should create a useMutation hook")
+        self.assertEqual(mutate_hooks[0].hook_name, 'useMutation')
+
+        sub_hooks = [h for h in all_hooks if h.operation_name == 'LAMBDA_INVOCATION_RESULT']
+        self.assertEqual(len(sub_hooks), 1,
+                         "client.subscribe({query: LAMBDA_INVOCATION_RESULT}) should create a useSubscription hook")
+        self.assertEqual(sub_hooks[0].hook_name, 'useSubscription')
 
 
     def test_client_imperative_inline_07(self):
@@ -1909,22 +1920,38 @@ export default LambdaCodegen;
         if ast:
             ast.print_tree()
 
-        # Note: GraphQL Codegen generated hooks (useGetLambdaInvocationsQuery, etc.)
-        # These hooks wrap Apollo hooks but don't pass the document as a parameter
-        # The document is pre-configured inside the generated hook
-        # Our current analyzer looks for hooks with an Identifier as first parameter
-        self.assertEqual(len(apollo_analysis_results.apollo_hooks_by_operation), 0, "Codegen hooks should not create symbols with current implementation")
+        [gql_cache, hooks_cache] = apollo_analysis_results.get_cache_dicts()
+        self.print_apollo_analysis_summary("test_codegen_generated_hooks_08", gql_cache, hooks_cache, module)
 
-        # TODO: Future enhancement - detect codegen pattern hooks:
-        #   - useGetLambdaInvocationsQuery -> links to GetLambdaInvocationsDocument
-        #   - useInvokeLambdaMutation -> links to InvokeLambdaDocument
-        #   - use[OperationName]Query/Mutation/Subscription pattern recognition
+        # Pattern 2: codegen-generated typed hooks (use[OperationName]Query/Mutation/Subscription)
+        # The component section calls each generated hook once → 4 hook operation entries.
+        self.assertEqual(len(apollo_analysis_results.apollo_hooks_by_operation), 4,
+                         "4 codegen hook calls (query×2 + mutation×1 + subscription×1) should produce 4 hook operations")
 
-        # for m_c in get_descendants(module.get_ast(), MethodCall):
-        #     if m_c.get_name() == 'invoke':
-        #         invoke_m_c = m_c
-        #         break
-        # self.assertTrue(RawBookmark(invoke_m_c, module) == invoke.raw_bookmark)
+        all_hooks = [h for hooks in apollo_analysis_results.apollo_hooks_by_operation.values() for h in hooks]
+        op_names = {h.operation_name for h in all_hooks}
+
+        self.assertIn('useGetLambdaInvocationsQuery', op_names,
+                      "useGetLambdaInvocationsQuery should be detected as a codegen Query hook")
+        self.assertIn('useGetLambdaInvocationsLazyQuery', op_names,
+                      "useGetLambdaInvocationsLazyQuery should be detected as a codegen Query hook")
+        self.assertIn('useInvokeLambdaMutation', op_names,
+                      "useInvokeLambdaMutation should be detected as a codegen Mutation hook")
+        self.assertIn('useOnLambdaInvocationResultSubscription', op_names,
+                      "useOnLambdaInvocationResultSubscription should be detected as a codegen Subscription hook")
+
+        # hook_name is normalised to useQuery / useMutation / useSubscription via the suffix
+        query_hooks = [h for h in all_hooks if h.hook_name == 'useQuery']
+        self.assertEqual(len(query_hooks), 2,
+                         "2 codegen hooks ending in 'Query' should map to hook_name='useQuery'")
+
+        mutation_hooks = [h for h in all_hooks if h.hook_name == 'useMutation']
+        self.assertEqual(len(mutation_hooks), 1,
+                         "1 codegen hook ending in 'Mutation' should map to hook_name='useMutation'")
+
+        sub_hooks = [h for h in all_hooks if h.hook_name == 'useSubscription']
+        self.assertEqual(len(sub_hooks), 1,
+                         "1 codegen hook ending in 'Subscription' should map to hook_name='useSubscription'")
 
 
     def test_advanced_patterns_09(self):
@@ -2112,6 +2139,143 @@ export default DataComponent
         auth_hooks = [h for h in hooks if h.operation_name == 'KsAuthFetchSession']
         self.assertEqual(len(auth_hooks), 0,
                          "Bug5: useQuery(useMemo(...)) with dynamic gql is not supported — no hook expected")
+
+
+    def test_angular_apollo_service_13(self):
+        """
+        MODULE 13 — Angular this.apollo.* calls (Pattern 3)
+
+        Simulates an Angular service that injects the Apollo service and calls:
+          - this.apollo.query({ query: CONST })        → GraphQLApolloHookQuery  (useQuery)
+          - this.apollo.mutate({ mutation: CONST })    → GraphQLApolloHookMutation (useMutation)
+          - this.apollo.watchQuery({ query: CONST })   → GraphQLApolloHookLazyQuery (useLazyQuery)
+
+        The 'this.apollo' receiver is discriminated from plain 'client.*' calls via the
+        presence of the 'apollo' token in the MethodCall node's string representation.
+        """
+
+        module = SourceFile('user.service.ts', text="""\
+/**
+ * MODULE 13 — Angular this.apollo.* service calls
+ *
+ * Angular service pattern using the Apollo service injected via the constructor.
+ * Covers the three Angular-specific Apollo methods mapped to hook types:
+ *   query       -> useQuery  (GraphQLApolloHookQuery)
+ *   mutate      -> useMutation (GraphQLApolloHookMutation)
+ *   watchQuery  -> useLazyQuery (GraphQLApolloHookLazyQuery)
+ */
+
+import { Injectable } from '@angular/core';
+import { Apollo, gql } from 'apollo-angular';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+
+// ─── GQL document constants ───────────────────────────────────────────────────
+
+const GET_USERS = gql`
+  query GetUsers {
+    users {
+      id
+      name
+      email
+    }
+  }
+`;
+
+const CREATE_USER = gql`
+  mutation CreateUser($name: String!, $email: String!) {
+    createUser(name: $name, email: $email) {
+      id
+      name
+      email
+    }
+  }
+`;
+
+const WATCH_USERS = gql`
+  query WatchUsers($status: String) {
+    users(status: $status) {
+      id
+      name
+      status
+    }
+  }
+`;
+
+// ─── Angular service ──────────────────────────────────────────────────────────
+
+interface User {
+  id: string;
+  name: string;
+  email?: string;
+  status?: string;
+}
+
+@Injectable({ providedIn: 'root' })
+export class UserService {
+  constructor(private apollo: Apollo) {}
+
+  getUsers(): Observable<User[]> {
+    return this.apollo.query({
+      query: GET_USERS,
+    }).pipe(map((result: any) => result.data.users));
+  }
+
+  createUser(name: string, email: string): Observable<User> {
+    return this.apollo.mutate({
+      mutation: CREATE_USER,
+      variables: { name, email },
+    }).pipe(map((result: any) => result.data.createUser));
+  }
+
+  watchUsers(status?: string): Observable<User[]> {
+    return this.apollo.watchQuery({
+      query: WATCH_USERS,
+      variables: { status },
+    }).valueChanges.pipe(map((result: any) => result.data.users));
+  }
+}
+""")
+        apollo_analysis_results = analyse(module)
+        ast = module.get_ast()
+        if ast:
+            ast.print_tree()
+
+        [gql_cache, hooks_cache] = apollo_analysis_results.get_cache_dicts()
+        self.print_apollo_analysis_summary("test_angular_apollo_service_13", gql_cache, hooks_cache, module)
+
+        # ── GQL definitions ──────────────────────────────────────────────────────
+        gql_defs = apollo_analysis_results.gql_definitions_by_file.get('user.service.ts', [])
+        self.assertEqual(len(gql_defs), 3,
+                         "3 gql`` template consts should produce 3 GQL definitions")
+        def_op_names = {d.operation_name for d in gql_defs}
+        self.assertIn('GetUsers',   def_op_names, "GET_USERS const should produce GqlQuery 'GetUsers'")
+        self.assertIn('CreateUser', def_op_names, "CREATE_USER const should produce GqlMutation 'CreateUser'")
+        self.assertIn('WatchUsers', def_op_names, "WATCH_USERS const should produce GqlQuery 'WatchUsers'")
+
+        # ── Pattern 3: Angular this.apollo.* hooks ───────────────────────────────
+        self.assertEqual(len(apollo_analysis_results.apollo_hooks_by_operation), 3,
+                         "this.apollo.query/mutate/watchQuery should each produce one hook operation")
+
+        all_hooks = [h for hooks in apollo_analysis_results.apollo_hooks_by_operation.values() for h in hooks]
+
+        query_hooks = [h for h in all_hooks if h.operation_name == 'GET_USERS']
+        self.assertEqual(len(query_hooks), 1,
+                         "this.apollo.query({query: GET_USERS}) should create a useQuery hook")
+        self.assertEqual(query_hooks[0].hook_name, 'useQuery',
+                         "Angular query maps to hook_name='useQuery'")
+
+        mutate_hooks = [h for h in all_hooks if h.operation_name == 'CREATE_USER']
+        self.assertEqual(len(mutate_hooks), 1,
+                         "this.apollo.mutate({mutation: CREATE_USER}) should create a useMutation hook")
+        self.assertEqual(mutate_hooks[0].hook_name, 'useMutation',
+                         "Angular mutate maps to hook_name='useMutation'")
+
+        watch_hooks = [h for h in all_hooks if h.operation_name == 'WATCH_USERS']
+        self.assertEqual(len(watch_hooks), 1,
+                         "this.apollo.watchQuery({query: WATCH_USERS}) should create a useLazyQuery hook")
+        self.assertEqual(watch_hooks[0].hook_name, 'useLazyQuery',
+                         "Angular watchQuery maps to hook_name='useLazyQuery'")
 
 
 if __name__ == "__main__":
