@@ -81,9 +81,12 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Dedup cache for GqlUnresolvedDefinition objects (keyed by operation_name)
         self.missing_gql_objects = {}
 
-        # Map variable_name -> kb_name (operation_name) for hook lookup resolution.
-        # Populated by _create_gql_definition(); first-seen wins on collision (outer scope wins).
-        self.var_name_to_op_name = {}
+        # Scope-keyed variable resolution: (file_path, var_name, id(parent_symbol)) -> op_name.
+        # Enables correct resolution when the same variable name (e.g. "QUERY") is declared
+        # in multiple scopes of the same file (e.g. 3 codegen wrapper functions).
+        self.scoped_var_map = {}
+        # Global fallback for cross-file resolution (first-seen wins).
+        self.global_var_map = {}
 
         # Map function_name -> KB object, populated from every processed TS file.
         # Used to create callLink from codegen hook objects to the TS wrapper function.
@@ -162,6 +165,27 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             log.warning('[GraphQL TS Client] Error processing file: ' + str(e))
             log.warning(traceback.format_exc())
     
+    def _resolve_variable_in_scope(self, variable_name, hook_parent_symbol, file_path):
+        """
+        Resolve a variable name to a GQL operation name using scope-aware lookup.
+        Walks the parent_symbol chain (innermost scope first), then falls back to
+        the global map for cross-file resolution.
+        """
+        if file_path and hook_parent_symbol is not None:
+            visited = set()
+            scope = hook_parent_symbol
+            while scope is not None:
+                sid = id(scope)
+                if sid in visited:
+                    break
+                visited.add(sid)
+                key = (file_path, variable_name, sid)
+                if key in self.scoped_var_map:
+                    return self.scoped_var_map[key]
+                scope = getattr(scope, 'get_parent_symbol', lambda: None)()
+        # Cross-file fallback (first-seen wins)
+        return self.global_var_map.get(variable_name, variable_name)
+
     def _create_gql_definition (self, gql_def, source_file):
         """
         LEVEL 1: Create GraphQL client definition object (GqlQuery/GqlMutation/GqlSubscription).
@@ -257,12 +281,17 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             log.info('[GraphQL TS Client] >>> Storing definition in cache')
             log.info('[GraphQL TS Client]     KEY: "' + kb_name + '" (var="' + variable_name + '")')
             self.gql_definitions[kb_name] = client_obj
-            if variable_name not in self.var_name_to_op_name:
-                self.var_name_to_op_name[variable_name] = kb_name
+            # Scope-keyed map: exact scope match for intra-file resolution
+            ps = getattr(gql_def, 'parent_symbol', None)
+            scoped_key = (file_path, variable_name, id(ps) if ps is not None else None)
+            if scoped_key not in self.scoped_var_map:
+                self.scoped_var_map[scoped_key] = kb_name
+            # Global fallback for cross-file (first-seen wins)
+            if variable_name not in self.global_var_map:
+                self.global_var_map[variable_name] = kb_name
             else:
-                log.warning('[GraphQL TS Client]   - Variable name collision: "' + variable_name +
-                            '" already maps to "' + self.var_name_to_op_name[variable_name] +
-                            '"; new op "' + kb_name + '" stored in cache but hook lookup will use first')
+                log.info('[GraphQL TS Client]   - global_var_map collision for "' + variable_name +
+                         '" (scope-keyed map handles intra-file; cross-file uses first-seen)')
             log.info('[GraphQL TS Client]     Cache now contains ' + str(len(self.gql_definitions)) + ' definition(s)')
             log.info('[GraphQL TS Client] ✓ Created ' + object_type + ': ' + kb_name)
             self.created_objects.append({'name': kb_name, 'type': object_type, 'file_path': file_path})
@@ -448,14 +477,16 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
 
             if source_pattern != 'codegen_hook':
                 resolved_key = None
-                lookup_key = self.var_name_to_op_name.get(operation_name, operation_name)
+                hook_ps = getattr(hook, 'parent_symbol', None)
+                fp = str(source_file.get_path())
+                lookup_key = self._resolve_variable_in_scope(operation_name, hook_ps, fp)
                 log.info('[GraphQL TS Client]     VAR: "' + operation_name + '" -> KEY: "' + lookup_key + '"')
                 if lookup_key in self.gql_definitions:
                     resolved_key = lookup_key
                 else:
                     log.info('[GraphQL TS Client]     ✗ Not found yet — queued for retry (Bug 2)')
                     self.pending_links.append(
-                        (request_obj, operation_name, source_file.get_kb_object(), source_pattern))
+                        (request_obj, operation_name, source_file.get_kb_object(), source_pattern, hook_ps, fp))
 
                 if resolved_key is not None:
                     client_obj = self.gql_definitions[resolved_key]
@@ -544,20 +575,22 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             self.pending_codegen_links = []
 
         # Bug 2 fix: resolve pending useLinks for cross-file GQL definitions.
-        # Tuple format: (request_obj, operation_name, caller_file_kb, source_pattern)
+        # Tuple format: (request_obj, operation_name, caller_file_kb, source_pattern, hook_ps, file_path)
         # Codegen hooks are never added to pending_links (no useLink created for them).
         if self.pending_links:
             log.info('[GraphQL TS Client] Resolving ' + str(len(self.pending_links)) + ' pending useLink(s)...')
             still_unresolved = []
             for entry in self.pending_links:
-                # Support both 3-tuple (legacy) and 4-tuple (new, with source_pattern)
-                if len(entry) == 4:
+                if len(entry) == 6:
+                    request_obj, operation_name, caller_file_kb, source_pattern, hook_ps, fp = entry
+                elif len(entry) == 4:
                     request_obj, operation_name, caller_file_kb, source_pattern = entry
+                    hook_ps, fp = None, None
                 else:
                     request_obj, operation_name, caller_file_kb = entry
-                    source_pattern = 'react_hook'
+                    source_pattern, hook_ps, fp = 'react_hook', None, None
 
-                lookup_key = self.var_name_to_op_name.get(operation_name, operation_name)
+                lookup_key = self._resolve_variable_in_scope(operation_name, hook_ps, fp)
 
                 if lookup_key in self.gql_definitions:
                     client_obj = self.gql_definitions[lookup_key]
@@ -620,7 +653,8 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         log.info('[GraphQL TS Client] Created ' + str(len(self.gql_definitions)) + ' gql definitions')
         
         self.gql_definitions = {}
-        self.var_name_to_op_name = {}
+        self.scoped_var_map = {}
+        self.global_var_map = {}
         self.missing_gql_objects = {}
         self.ts_functions = {}
         self.pending_codegen_links = []

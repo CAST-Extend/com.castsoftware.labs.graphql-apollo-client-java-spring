@@ -478,6 +478,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                                 # ✨ CREATE AND ADD SYMBOL TO SOURCEFILE
                                 # Find the correct parent symbol (Function, Method, Class, or Module)
                                 parent_symbol = self.find_parent_symbol_for_ast_node(var_decl)
+                                gql_def.parent_symbol = parent_symbol
 
                                 gql_symbol = GqlDefinitionSymbol(
                                     name=effective_var_name,
@@ -664,6 +665,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         self.apollo_analysis_results.add_gql_definition(gql_def)
 
         parent_symbol = self.find_parent_symbol_for_ast_node(var_decl)
+        gql_def.parent_symbol = parent_symbol
         gql_symbol = GqlDefinitionSymbol(
             name=var_name,
             parent=parent_symbol,
@@ -758,6 +760,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                             # ✨ CREATE AND ADD SYMBOL FOR INLINE GQL
                             # Find the correct parent symbol
                             parent_symbol = self.find_parent_symbol_for_ast_node(func_call)
+                            gql_def.parent_symbol = parent_symbol
 
                             inline_gql_symbol = GqlDefinitionSymbol(
                                 name=inline_name + '_inline',

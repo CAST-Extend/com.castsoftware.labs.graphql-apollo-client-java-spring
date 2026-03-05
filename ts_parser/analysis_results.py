@@ -186,6 +186,7 @@ class GqlDefinition:
         self.fields_selected = fields_selected
         self.ast_node = ast_node
         self.raw_bookmark = raw_bookmark
+        self.parent_symbol = None  # Set post-construction by the interpreter
 
     def to_dict(self):
         """Convert to dictionary format for compatibility with existing tests"""
