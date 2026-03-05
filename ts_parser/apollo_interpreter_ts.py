@@ -781,30 +781,33 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                         log.info('    Could not extract operation name from {} hook'.format(hook_name))
                         continue
                     
+                    # Find the correct parent symbol BEFORE creating the hook object so it can
+                    # be stored on hook_obj for use by _create_hook_object() in the analyzer.
+                    parent_symbol = self.find_parent_symbol_for_ast_node(func_call)
+
                     # Create ApolloHookObject
                     raw_bookmark = RawBookmark(func_call, self.module)
-                    
+
                     hook_obj = ApolloHookObject(
                         hook_name=hook_name,
                         operation_name=operation_name,
                         ast_node=func_call,
                         raw_bookmark=raw_bookmark,
-                        module=self.module
+                        module=self.module,
+                        parent_symbol=parent_symbol
                     )
-                    
+
                     # Mark as inline if applicable
                     if is_inline:
                         hook_obj.inline = operation_name
-                    
+
                     # Add to analysis results
                     self.apollo_analysis_results.add_apollo_hook(hook_obj)
-                    
+
                     # Register in module's node_symbols
                     self.module.add_node_symbol(operation_name, hook_obj)
-                    
+
                     # ✨ CREATE AND ADD SYMBOL
-                    # Find the correct parent symbol (should be the Function/Method containing this hook call)
-                    parent_symbol = self.find_parent_symbol_for_ast_node(func_call)
 
                     hook_symbol = ApolloHookSymbol(
                         name=operation_name,
@@ -1006,6 +1009,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         normalized_hook = 'use' + suffix   # 'useQuery', 'useMutation', 'useSubscription'
         operation_name = hook_name         # e.g. 'useGetLambdaInvocationsQuery'
 
+        parent_symbol = self.find_parent_symbol_for_ast_node(func_call)
         raw_bookmark = RawBookmark(func_call, self.module)
         hook_obj = ApolloHookObject(
             hook_name=normalized_hook,
@@ -1013,12 +1017,11 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             ast_node=func_call,
             raw_bookmark=raw_bookmark,
             module=self.module,
-            source_pattern='codegen_hook'
+            source_pattern='codegen_hook',
+            parent_symbol=parent_symbol
         )
         self.apollo_analysis_results.add_apollo_hook(hook_obj)
         self.module.add_node_symbol(operation_name, hook_obj)
-
-        parent_symbol = self.find_parent_symbol_for_ast_node(func_call)
         hook_symbol = ApolloHookSymbol(
             name=operation_name,
             parent=parent_symbol,
@@ -1112,6 +1115,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         log.info('  {} — detected: {}:{}'.format(pattern_label, normalized_hook, operation_name))
 
         # ── Create ApolloHookObject (same class as standard hooks) ────────────
+        parent_symbol = self.find_parent_symbol_for_ast_node(method_call)
         raw_bookmark = RawBookmark(method_call, self.module)
         hook_obj = ApolloHookObject(
             hook_name=normalized_hook,
@@ -1119,12 +1123,11 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             ast_node=method_call,
             raw_bookmark=raw_bookmark,
             module=self.module,
-            source_pattern='angular_method' if is_angular else 'client_method'
+            source_pattern='angular_method' if is_angular else 'client_method',
+            parent_symbol=parent_symbol
         )
         self.apollo_analysis_results.add_apollo_hook(hook_obj)
         self.module.add_node_symbol(operation_name, hook_obj)
-
-        parent_symbol = self.find_parent_symbol_for_ast_node(method_call)
         hook_symbol = ApolloHookSymbol(
             name=operation_name,
             parent=parent_symbol,

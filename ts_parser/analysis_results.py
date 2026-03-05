@@ -71,15 +71,29 @@ class RawBookmark:
 
     def get_bookmark(self):
         try:
-            if self.ast.get_begin_line() is not None:
-                return Bookmark(self.module.get_file(), 
-                                self.ast.get_begin_line(), 
-                                self.ast.get_begin_column(), 
-                                self.ast.get_end_line(), 
-                                self.ast.get_end_column()+1)
-            else:
-                log.warning('[RawBookmark] get_bookmark() missing line/column info for AST node: ' + str(self.ast))
+            begin_line = self.ast.get_begin_line()
+            if begin_line is None:
+                log.warning('[RawBookmark] get_bookmark() missing line info for AST node: ' + str(self.ast))
                 return None
+
+            # Resolve the file object: SourceFile IS the Extensibility::File directly.
+            # Try get_file() as a convenience if it exists; fall back to self.module.
+            try:
+                file_obj = self.module.get_file()
+            except Exception:
+                file_obj = self.module
+
+            # Column info is not guaranteed on all node types — fall back to 0 if unavailable.
+            try:
+                begin_col = self.ast.get_begin_column()
+                end_line  = self.ast.get_end_line()
+                end_col   = self.ast.get_end_column() + 1
+            except Exception:
+                begin_col = 0
+                end_line  = begin_line
+                end_col   = 0
+
+            return Bookmark(file_obj, begin_line, begin_col, end_line, end_col)
         except Exception as e:
             log.warning('[RawBookmark] get_bookmark() exception: ' + str(e))
             import traceback as _tb

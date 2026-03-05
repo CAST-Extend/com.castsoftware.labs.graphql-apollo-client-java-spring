@@ -19,3 +19,6 @@ small_app_test/
 __init__.py
 CLAUDE.md
 MEMORY.md
+AI_CONTEXT.md
+COPILOT_INSTRUCTIONS.md
+docs/

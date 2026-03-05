@@ -109,7 +109,7 @@ class ApolloHookObject:
     """
 
     def __init__(self, hook_name, operation_name, ast_node, raw_bookmark, module,
-                 source_pattern='react_hook'):
+                 source_pattern='react_hook', parent_symbol=None):
         """
         Initialize an Apollo Hook object.
 
@@ -124,6 +124,9 @@ class ApolloHookObject:
                 'client_method' — imperative client.query/mutate/subscribe
                 'angular_method'— Angular this.apollo.query/mutate/watchQuery
                 'codegen_hook'  — Apollo Codegen generated hook (useGetXQuery etc.)
+            parent_symbol: The TS symbol (Function/Method/Class) containing this hook call.
+                Used in graphql_typescript_analyzer to set the correct callLink source
+                (e.g., the wrapper function, not just the file).
         """
         self.hook_name = hook_name
         self.operation_name = operation_name
@@ -131,6 +134,7 @@ class ApolloHookObject:
         self.raw_bookmark = raw_bookmark
         self.module = module
         self.source_pattern = source_pattern
+        self.parent_symbol = parent_symbol  # Symbol that contains this hook call
         self.kb_symbol = None
         self.inline = None  # Set to operation name if gql is defined inline
 

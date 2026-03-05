@@ -18,7 +18,6 @@ LEVEL 2: Apollo hook calls (GraphQL*Request)
   - Links to LEVEL 1 definitions
 """
 
-import re
 import traceback
 from cast.analysers import ua, log, CustomObject, Bookmark, create_link
 from cast import Event
@@ -86,6 +85,14 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Populated by _create_gql_definition(); first-seen wins on collision (outer scope wins).
         self.var_name_to_op_name = {}
 
+        # Map function_name -> KB object, populated from every processed TS file.
+        # Used to create callLink from codegen hook objects to the TS wrapper function.
+        self.ts_functions = {}
+
+        # Codegen hooks whose TS wrapper function was not yet seen when the hook was created.
+        # Each entry: (codegen_obj, function_name)
+        self.pending_codegen_links = []
+
         # Track created/failed objects for end-of-analysis summary
         # Each entry: {'name': str, 'type': str, 'file_path': str}
         self.created_objects = []
@@ -114,23 +121,40 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             
             log.info('[GraphQL TS Client] Found ' + str(len(gql_defs)) + ' GQL definitions')
             log.info('[GraphQL TS Client] Found ' + str(len(hooks)) + ' Apollo hooks')
-            
-            # STEP 3: LEVEL 1 - Save GQL definitions to KB (same as JavaScript analyzer)
+
+            # STEP 3: Collect TS function / method KB objects for codegen callLink resolution.
+            # CAST has already created these KB objects before our event fires (CAST processes
+            # the file first, then fires 'typescript_file' for extensions).
+            # We do this BEFORE hook processing so same-file codegen callLinks can be resolved
+            # immediately without queuing (e.g. useGetXQuery defined and called in the same file).
+            try:
+                for sym in source_file.get_all_symbols():
+                    sym_type = type(sym).__name__
+                    if sym_type in ('Function', 'Method'):
+                        fn_name = sym.get_name() if hasattr(sym, 'get_name') else None
+                        if fn_name and fn_name not in self.ts_functions:
+                            fn_kb = sym.get_kb_object() if hasattr(sym, 'get_kb_object') else None
+                            if fn_kb:
+                                self.ts_functions[fn_name] = fn_kb
+            except Exception as sym_ex:
+                log.warning('[GraphQL TS Client] Error collecting function symbols: ' + str(sym_ex))
+
+            # STEP 4: LEVEL 1 - Save GQL definitions to KB (same as JavaScript analyzer)
             for gql_def in gql_defs:
                 try:
                     self._create_gql_definition (gql_def, source_file)
                 except Exception as save_ex:
                     log.warning('[GraphQL TS Client] Error saving GQL definition: ' + str(save_ex))
                     log.warning(traceback.format_exc())
-            
-            # STEP 4: LEVEL 2 - Save Apollo hooks to KB (same as JavaScript analyzer)
+
+            # STEP 5: LEVEL 2 - Save Apollo hooks to KB (same as JavaScript analyzer)
             for hook in hooks:
                 try:
                     self._create_hook_object(hook, source_file, apollo_analysis_results)
                 except Exception as save_ex:
                     log.warning('[GraphQL TS Client] Error saving Apollo hook: ' + str(save_ex))
                     log.warning(traceback.format_exc())
-            
+
             log.info('[GraphQL TS Client] File processing complete')
             log.info('[GraphQL TS Client] ========================================')
             
@@ -287,23 +311,6 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         ('codegen_hook',  'useSubscription'): 'useSubscription',
     }
 
-    @staticmethod
-    def _extract_codegen_base_name(hook_name):
-        """
-        Extract the base operation name from a codegen hook function name.
-
-        useGetLambdaInvocationsQuery  -> GetLambdaInvocations
-        useCreateUserMutation         -> CreateUser
-        useOnEventSubscription        -> OnEvent
-        useGetUsersLazyQuery          -> GetUsers
-
-        Returns the base name string, or None if the pattern does not match.
-        """
-        m = re.match(r'^use([A-Z][A-Za-z0-9]+?)(LazyQuery|Query|Mutation|Subscription)$', hook_name)
-        if m:
-            return m.group(1)
-        return None
-
     def _create_hook_object(self, hook, source_file, apollo_analysis_results):
         """
         LEVEL 2: Create GraphQL hook/call request object.
@@ -341,19 +348,35 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 object_type = 'GraphQLApolloHookQuery'
             _track_type = object_type
             
-            # Step 2: Get parent component (KB object)
-            # For hooks, we need to find the containing function/component from the raw_bookmark
+            # Step 2: Get parent component (KB object).
+            # Priority:
+            #   1. hook.parent_symbol (stored by the interpreter via find_parent_symbol_for_ast_node)
+            #      — gives the innermost Function/Method that contains the hook call.
+            #      This makes callLink(function → hook_obj) correct even for hooks inside
+            #      nested functions (e.g. useLazyQuery inside a codegen wrapper function).
+            #   2. get_first_kb_parent() on the raw AST node (only works for CAST AST nodes,
+            #      not for typescript_dependencies nodes — kept as a future-proof fallback).
+            #   3. The file itself as last resort.
             parent_kb = None
-            
-            # Try to get parent from the hook's AST location
-            if hook.raw_bookmark and hook.raw_bookmark.ast:
-                # Try get_first_kb_parent() if available (similar to JS analyzer)
+
+            if hook.parent_symbol and hasattr(hook.parent_symbol, 'get_kb_object'):
+                try:
+                    parent_kb = hook.parent_symbol.get_kb_object()
+                    if parent_kb:
+                        log.info('[GraphQL TS Client] Parent from parent_symbol: ' + str(parent_kb))
+                    else:
+                        log.info('[GraphQL TS Client] parent_symbol.get_kb_object() returned None')
+                except Exception as ps_ex:
+                    log.info('[GraphQL TS Client] parent_symbol.get_kb_object() failed: ' + str(ps_ex))
+                    parent_kb = None
+
+            if not parent_kb and hook.raw_bookmark and hook.raw_bookmark.ast:
                 if hasattr(hook.raw_bookmark.ast, 'get_first_kb_parent'):
                     first_kb_parent = hook.raw_bookmark.ast.get_first_kb_parent()
                     if first_kb_parent:
                         parent_kb = first_kb_parent.get_kb_object()
                         log.info('[GraphQL TS Client] Parent from get_first_kb_parent: ' + str(parent_kb))
-            
+
             # Fallback: use the file as parent
             if not parent_kb:
                 parent_kb = source_file.get_kb_object()
@@ -370,8 +393,12 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             
             # Step 4: Build unique name.
             # React hooks: useQuery:GetUsers — Angular: apollo.query:GetUsers — Client: client.query:GetUsers
-            name_prefix = self._HOOK_NAME_PREFIX.get((source_pattern, hook_name), hook_name)
-            unique_request_name = name_prefix + ':' + operation_name
+            # Codegen hooks: the full hook function name IS the name (e.g. "useGetPortfolioAllocationLazyQuery")
+            if source_pattern == 'codegen_hook':
+                unique_request_name = operation_name
+            else:
+                name_prefix = self._HOOK_NAME_PREFIX.get((source_pattern, hook_name), hook_name)
+                unique_request_name = name_prefix + ':' + operation_name
             
             log.info('[GraphQL TS Client] Creating ' + object_type + ': ' + unique_request_name)
             log.info('[GraphQL TS Client]   - Fullname: ' + fullname)
@@ -413,32 +440,14 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 log.warning(traceback.format_exc())
 
             # Step 9: Create useLink (request -> GQL definition).
-            # For codegen hooks, operation_name is the full function name (e.g. 'useGetLambdaInvocationsQuery').
-            # We first try to extract the base name (e.g. 'GetLambdaInvocations') and look that up.
-            # For all other patterns, operation_name is the variable name (e.g. 'GET_LAMBDA_INVOCATIONS')
-            # resolved through var_name_to_op_name to the operation name (e.g. 'GetLambdaInvocations').
+            # Codegen hooks do NOT get a useLink here — their chain is:
+            #   codegen call site → CALL → codegen wrapper function → CALL → standard hook → useLink → GQL def
+            # The useLink is created by the standard hook object inside the wrapper, not here.
             log.info('[GraphQL TS Client] >>> Searching for client definition')
             log.info('[GraphQL TS Client]     AVAILABLE KEYS: ' + str(list(self.gql_definitions.keys())))
 
-            resolved_key = None
-            if source_pattern == 'codegen_hook':
-                codegen_base = self._extract_codegen_base_name(operation_name)
-                log.info('[GraphQL TS Client]     Codegen: "{}" -> base="{}"'.format(
-                    operation_name, codegen_base))
-                if codegen_base and codegen_base in self.gql_definitions:
-                    resolved_key = codegen_base
-                elif codegen_base:
-                    # Base extracted but not found yet — queue with base name for retry
-                    log.info('[GraphQL TS Client]     Codegen base "' + codegen_base +
-                             '" not found yet — queued for retry')
-                    self.pending_links.append(
-                        (request_obj, codegen_base, source_file.get_kb_object(), source_pattern))
-                else:
-                    log.info('[GraphQL TS Client]     Could not extract codegen base from "' +
-                             operation_name + '" — queued as unresolved')
-                    self.pending_links.append(
-                        (request_obj, operation_name, source_file.get_kb_object(), source_pattern))
-            else:
+            if source_pattern != 'codegen_hook':
+                resolved_key = None
                 lookup_key = self.var_name_to_op_name.get(operation_name, operation_name)
                 log.info('[GraphQL TS Client]     VAR: "' + operation_name + '" -> KEY: "' + lookup_key + '"')
                 if lookup_key in self.gql_definitions:
@@ -448,15 +457,29 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     self.pending_links.append(
                         (request_obj, operation_name, source_file.get_kb_object(), source_pattern))
 
-            if resolved_key is not None:
-                client_obj = self.gql_definitions[resolved_key]
-                log.info('[GraphQL TS Client]     ✓ Found client definition: ' + str(client_obj))
-                try:
-                    create_link("useLink", request_obj, client_obj)
-                    log.info('[GraphQL TS Client]     ✓ Created useLink: ' + unique_request_name +
-                             ' -> ' + resolved_key)
-                except Exception as link_ex:
-                    log.warning('[GraphQL TS Client]     ✗ Failed to create useLink: ' + str(link_ex))
+                if resolved_key is not None:
+                    client_obj = self.gql_definitions[resolved_key]
+                    log.info('[GraphQL TS Client]     ✓ Found client definition: ' + str(client_obj))
+                    try:
+                        create_link("useLink", request_obj, client_obj)
+                        log.info('[GraphQL TS Client]     ✓ Created useLink: ' + unique_request_name +
+                                 ' -> ' + resolved_key)
+                    except Exception as link_ex:
+                        log.warning('[GraphQL TS Client]     ✗ Failed to create useLink: ' + str(link_ex))
+            else:
+                # Codegen hook: create callLink to the TS wrapper function so the chain
+                # codegen_obj → CALL → wrapper_function → CALL → useLazyQuery → USE → GqlDef is visible.
+                log.info('[GraphQL TS Client]     Codegen hook — no useLink; creating callLink to TS function')
+                if operation_name in self.ts_functions:
+                    fn_kb = self.ts_functions[operation_name]
+                    try:
+                        create_link("callLink", request_obj, fn_kb)
+                        log.info('[GraphQL TS Client]     ✓ callLink: codegen obj → TS function ' + operation_name)
+                    except Exception as link_ex:
+                        log.warning('[GraphQL TS Client]     ✗ Failed to create codegen callLink: ' + str(link_ex))
+                else:
+                    self.pending_codegen_links.append((request_obj, operation_name))
+                    log.info('[GraphQL TS Client]     ✗ TS function "' + operation_name + '" not yet seen — queued')
             
             log.info('[GraphQL TS Client] ✓ Created ' + object_type + ': ' + operation_name)
             self.created_objects.append({'name': unique_request_name, 'type': object_type, 'file_path': file_path})
@@ -466,8 +489,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             log.warning(traceback.format_exc())
             self.failed_objects.append({'name': _track_name, 'type': _track_type, 'file_path': _track_file})
     
-    def _create_missing_gql_definition(self, request_obj, operation_name, caller_file_kb,
-                                       source_pattern='react_hook'):
+    def _create_missing_gql_definition(self, request_obj, operation_name, caller_file_kb):
         """
         Create (or reuse) a GqlUnresolvedDefinition object for a hook whose GQL definition
         was never found in any analyzed file.
@@ -485,13 +507,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     missing_obj.set_parent(caller_file_kb)
                 missing_obj.save()
                 self.missing_gql_objects[operation_name] = missing_obj
-                if source_pattern == 'codegen_hook':
-                    log.warning('[GraphQL TS Client] Created GqlUnresolvedDefinition: "' +
-                                operation_name + '" — no matching GQL definition found for codegen '
-                                'hook (base name extraction attempted but no GqlQuery/Mutation/'
-                                'Subscription with this operation name exists in analyzed files)')
-                else:
-                    log.info('[GraphQL TS Client] Created GqlUnresolvedDefinition: ' + operation_name)
+                log.info('[GraphQL TS Client] Created GqlUnresolvedDefinition: ' + operation_name)
                 self.created_objects.append({'name': operation_name, 'type': 'GqlUnresolvedDefinition',
                                              'file_path': str(caller_file_kb)})
             else:
@@ -512,10 +528,24 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         This is called when all TypeScript files have been processed.
         We use this to display final statistics.
         """
+        # Resolve pending codegen callLinks (function defined in a file processed after the call site).
+        if self.pending_codegen_links:
+            log.info('[GraphQL TS Client] Resolving ' + str(len(self.pending_codegen_links)) + ' pending codegen callLink(s)...')
+            for (codegen_obj, fn_name) in self.pending_codegen_links:
+                if fn_name in self.ts_functions:
+                    fn_kb = self.ts_functions[fn_name]
+                    try:
+                        create_link("callLink", codegen_obj, fn_kb)
+                        log.info('[GraphQL TS Client]   ✓ Resolved codegen callLink: ' + fn_name)
+                    except Exception as e:
+                        log.warning('[GraphQL TS Client]   ✗ Failed codegen callLink for "' + fn_name + '": ' + str(e))
+                else:
+                    log.info('[GraphQL TS Client]   ✗ TS function not found anywhere: "' + fn_name + '" (external/generated)')
+            self.pending_codegen_links = []
+
         # Bug 2 fix: resolve pending useLinks for cross-file GQL definitions.
         # Tuple format: (request_obj, operation_name, caller_file_kb, source_pattern)
-        # For codegen hooks, operation_name may already be the pre-extracted base name.
-        # For all other patterns, operation_name is the variable name resolved via var_name_to_op_name.
+        # Codegen hooks are never added to pending_links (no useLink created for them).
         if self.pending_links:
             log.info('[GraphQL TS Client] Resolving ' + str(len(self.pending_links)) + ' pending useLink(s)...')
             still_unresolved = []
@@ -527,13 +557,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     request_obj, operation_name, caller_file_kb = entry
                     source_pattern = 'react_hook'
 
-                # For codegen hooks the operation_name stored in the queue is already
-                # the extracted base name (e.g. 'GetLambdaInvocations'), so look it up directly.
-                # For all other patterns resolve through var_name_to_op_name.
-                if source_pattern == 'codegen_hook':
-                    lookup_key = operation_name
-                else:
-                    lookup_key = self.var_name_to_op_name.get(operation_name, operation_name)
+                lookup_key = self.var_name_to_op_name.get(operation_name, operation_name)
 
                 if lookup_key in self.gql_definitions:
                     client_obj = self.gql_definitions[lookup_key]
@@ -548,9 +572,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     log.info('[GraphQL TS Client]   ✗ Still unresolved: "' + operation_name +
                              '" key="' + lookup_key + '" — creating GqlUnresolvedDefinition')
                     still_unresolved.append((request_obj, lookup_key, caller_file_kb, source_pattern))
-            for (request_obj, operation_name, caller_file_kb, source_pattern) in still_unresolved:
+            for (request_obj, operation_name, caller_file_kb, _) in still_unresolved:
                 self._create_missing_gql_definition(
-                    request_obj, operation_name, caller_file_kb, source_pattern)
+                    request_obj, operation_name, caller_file_kb)
             self.pending_links = []  # free memory — on_end is the real finish point
 
         log.info('[GraphQL TS Client] ================================================')
@@ -598,6 +622,8 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         self.gql_definitions = {}
         self.var_name_to_op_name = {}
         self.missing_gql_objects = {}
+        self.ts_functions = {}
+        self.pending_codegen_links = []
         self.source_file_counter = 0
         self.created_objects = []
         self.failed_objects = []
