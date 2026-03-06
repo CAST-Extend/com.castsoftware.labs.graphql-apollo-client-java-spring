@@ -11,7 +11,8 @@ Key features:
 
 Links created:
 1. Client-to-Schema (USE links):
-   - GqlQuery/Mutation/Subscription → GraphQLField
+   - TsGqlQuery/TsGqlMutation/TsGqlSubscription (TypeScript) → GraphQLField
+   - JsGqlQuery/JsGqlMutation/JsGqlSubscription (JavaScript) → GraphQLField
    - Based on 'fieldsSelected' property of client definitions
    
 2. Schema-to-Backend (CALL links):
@@ -66,9 +67,9 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         
         Links created:
         1. Client → Schema (USE links):
-           - GqlQuery → GraphQLField (Query)
-           - GqlMutation → GraphQLField (Mutation)
-           - GqlSubscription → GraphQLField (Subscription)
+           - TsGqlQuery / JsGqlQuery → GraphQLField (Query)
+           - TsGqlMutation / JsGqlMutation → GraphQLField (Mutation)
+           - TsGqlSubscription / JsGqlSubscription → GraphQLField (Subscription)
            
         2. Schema → Backend (CALL links):
            - GraphQLField → JV_METHOD (annotated Java methods)
@@ -126,80 +127,92 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
     def _link_client_to_schema(self, application):
         """
         Create USE links between GraphQL client definitions and schema fields.
-        
-        Links GqlQuery/Mutation/Subscription objects to GraphQLField objects.
-        
+
+        Links TsGqlQuery/TsGqlMutation/TsGqlSubscription (TypeScript) and
+        JsGqlQuery/JsGqlMutation/JsGqlSubscription (JavaScript) objects to
+        GraphQLField objects from the schema.
+
         Linking logic:
-        - Retrieves all client objects (Query, Mutation, Subscription)
+        - One search_objects() call for efficiency, filtered into separate Ts/Js lists
         - Builds an index of schema fields (Query, Mutation, Subscription types)
         - For each client object, extracts the 'fieldsSelected' property
         - Creates a USE link between client and each corresponding schema field
-        
+
         Example:
-            Client: GqlQuery with fieldsSelected="users,posts"
+            Client: TsGqlQuery with fieldsSelected="users,posts"
             → Creates 2 USE links to Query.users and Query.posts
-        
+
         Args:
             application: CAST Application object
         """
         info('[GraphQL Application] ========================================')
         info('[GraphQL Application] Starting client-to-schema linking')
         info('[GraphQL Application] ========================================')
-        
-        # Use search_objects(load_properties=True) to load properties needed for linking
-        client_queries = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlQuery']
-        client_mutations = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlMutation']
-        client_subscriptions = [obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlSubscription']
-        
-        info('[GraphQL Application] Found ' + str(len(client_queries)) + ' GqlQuery objects')
-        info('[GraphQL Application] Found ' + str(len(client_mutations)) + ' GqlMutation objects')
-        info('[GraphQL Application] Found ' + str(len(client_subscriptions)) + ' GqlSubscription objects')
-        
-        total_clients = len(client_queries) + len(client_mutations) + len(client_subscriptions)
+
+        # Single search call for efficiency; split into separate Ts/Js lists per operation type
+        all_objects = list(application.search_objects(load_properties=True))
+
+        ts_client_queries       = [o for o in all_objects if o.get_type() == 'TsGqlQuery']
+        js_client_queries       = [o for o in all_objects if o.get_type() == 'JsGqlQuery']
+        ts_client_mutations     = [o for o in all_objects if o.get_type() == 'TsGqlMutation']
+        js_client_mutations     = [o for o in all_objects if o.get_type() == 'JsGqlMutation']
+        ts_client_subscriptions = [o for o in all_objects if o.get_type() == 'TsGqlSubscription']
+        js_client_subscriptions = [o for o in all_objects if o.get_type() == 'JsGqlSubscription']
+
+        info('[GraphQL Application] Found ' + str(len(ts_client_queries)) + ' TsGqlQuery, ' +
+             str(len(js_client_queries)) + ' JsGqlQuery objects')
+        info('[GraphQL Application] Found ' + str(len(ts_client_mutations)) + ' TsGqlMutation, ' +
+             str(len(js_client_mutations)) + ' JsGqlMutation objects')
+        info('[GraphQL Application] Found ' + str(len(ts_client_subscriptions)) + ' TsGqlSubscription, ' +
+             str(len(js_client_subscriptions)) + ' JsGqlSubscription objects')
+
+        total_clients = (len(ts_client_queries) + len(js_client_queries) +
+                         len(ts_client_mutations) + len(js_client_mutations) +
+                         len(ts_client_subscriptions) + len(js_client_subscriptions))
         if total_clients == 0:
             warning('[GraphQL Application] No client definitions found')
             return
-        
+
         info('[GraphQL Application] Building schema field index...')
         schema_queries = {}
         schema_mutations = {}
         schema_subscriptions = {}
-        
+
         graphql_types = [obj for obj in application.get_objects() if obj.get_type() == 'GraphQLType']
-        
+
         for type_obj in graphql_types:
             type_name = type_obj.get_name()
-            
+
             if type_name == 'Query':
                 type_obj.load_children()
                 for field_obj in type_obj.get_children():
                     if field_obj.get_type() == 'GraphQLField':
                         schema_queries[field_obj.get_name()] = field_obj
-                        
+
             elif type_name == 'Mutation':
                 type_obj.load_children()
                 for field_obj in type_obj.get_children():
                     if field_obj.get_type() == 'GraphQLField':
                         schema_mutations[field_obj.get_name()] = field_obj
-                        
+
             elif type_name == 'Subscription':
                 type_obj.load_children()
                 for field_obj in type_obj.get_children():
                     if field_obj.get_type() == 'GraphQLField':
                         schema_subscriptions[field_obj.get_name()] = field_obj
-        
-        info('[GraphQL Application] Schema index: ' + str(len(schema_queries)) + ' queries, ' + 
+
+        info('[GraphQL Application] Schema index: ' + str(len(schema_queries)) + ' queries, ' +
              str(len(schema_mutations)) + ' mutations, ' + str(len(schema_subscriptions)) + ' subscriptions')
-        
+
         links_created = 0
-        
-        for client_obj in client_queries:
+
+        for client_obj in ts_client_queries + js_client_queries:
             links_created += self._link_client_to_fields(client_obj, schema_queries, 'Query')
-        
-        for client_obj in client_mutations:
+
+        for client_obj in ts_client_mutations + js_client_mutations:
             links_created += self._link_client_to_fields(client_obj, schema_mutations, 'Mutation')
-        
-        for client_obj in client_subscriptions:
+
+        for client_obj in ts_client_subscriptions + js_client_subscriptions:
             links_created += self._link_client_to_fields(client_obj, schema_subscriptions, 'Subscription')
         
         info('[GraphQL Application] ========================================')

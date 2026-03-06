@@ -35,40 +35,40 @@ from cast import Event
 
 # React hooks: exact function name → KB type
 _APOLLO_HOOKS = {
-    'useQuery':        'GraphQLApolloHookQuery',
-    'useLazyQuery':    'GraphQLApolloHookLazyQuery',
-    'useMutation':     'GraphQLApolloHookMutation',
-    'useSubscription': 'GraphQLApolloHookSubscription',
+    'useQuery':        'JsGraphQLApolloHookQuery',
+    'useLazyQuery':    'JsGraphQLApolloHookLazyQuery',
+    'useMutation':     'JsGraphQLApolloHookMutation',
+    'useSubscription': 'JsGraphQLApolloHookSubscription',
 }
 
 # Angular apollo service methods → (KB type, display prefix)
 _ANGULAR_METHODS = {
-    'query':      ('GraphQLApolloAngularQuery',      'apollo.query'),
-    'mutate':     ('GraphQLApolloAngularMutation',   'apollo.mutate'),
-    'watchQuery': ('GraphQLApolloAngularWatchQuery', 'apollo.watchQuery'),
+    'query':      ('JsGraphQLApolloAngularQuery',      'apollo.query'),
+    'mutate':     ('JsGraphQLApolloAngularMutation',   'apollo.mutate'),
+    'watchQuery': ('JsGraphQLApolloAngularWatchQuery', 'apollo.watchQuery'),
 }
 
 # Direct Apollo Client methods → (KB type, display prefix)
 _CLIENT_METHODS = {
-    'query':  ('GraphQLApolloClientQuery',    'client.query'),
-    'mutate': ('GraphQLApolloClientMutation', 'client.mutate'),
+    'query':  ('JsGraphQLApolloClientQuery',    'client.query'),
+    'mutate': ('JsGraphQLApolloClientMutation', 'client.mutate'),
 }
 
 # GraphQL operation keyword → GQL definition KB type
 _OP_TYPE_MAP = {
-    'query':        'GqlQuery',
-    'mutation':     'GqlMutation',
-    'subscription': 'GqlSubscription',
+    'query':        'JsGqlQuery',
+    'mutation':     'JsGqlMutation',
+    'subscription': 'JsGqlSubscription',
 }
 
 # Codegen hook pattern: useGetXQuery, useCreateXMutation, etc.
 _CODEGEN_PATTERN = re.compile(
     r'^use[A-Z][A-Za-z0-9_]*(Query|LazyQuery|Mutation|Subscription)$')
 _CODEGEN_SUFFIX_MAP = {
-    'Query':        'GraphQLApolloHookQuery',
-    'LazyQuery':    'GraphQLApolloHookLazyQuery',
-    'Mutation':     'GraphQLApolloHookMutation',
-    'Subscription': 'GraphQLApolloHookSubscription',
+    'Query':        'JsGraphQLApolloHookQuery',
+    'LazyQuery':    'JsGraphQLApolloHookLazyQuery',
+    'Mutation':     'JsGraphQLApolloHookMutation',
+    'Subscription': 'JsGraphQLApolloHookSubscription',
 }
 
 # Import names that signal a file uses Apollo Client (used to filter jsContent)
@@ -132,7 +132,7 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         # (hook_obj, var_name, caller_kb, source_pattern) awaiting Phase 3 (Bug 2 fix)
         self.pending_links = []
 
-        # operation_name → GqlUnresolvedDefinition; deduplicated across hooks
+        # operation_name → JsGqlUnresolvedDefinition; deduplicated across hooks
         self.missing_gql_objects = {}
 
         # jsContent objects collected in start_javascript_content
@@ -311,7 +311,7 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         if not m:
             return None, None, '', ''
 
-        op_type = _OP_TYPE_MAP.get(m.group(1).lower(), 'GqlQuery')
+        op_type = _OP_TYPE_MAP.get(m.group(1).lower(), 'JsGqlQuery')
         op_name = m.group(2)
 
         # Variables: $varName patterns in the operation signature
@@ -591,19 +591,19 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             else:
                 still.append(entry)
 
-        # Create GqlUnresolvedDefinition objects for hooks whose GQL def was never found
+        # Create JsGqlUnresolvedDefinition objects for hooks whose GQL def was never found
         for hook_obj, var_name, caller_kb, source_pattern in still:
             lookup_key = self._resolve_lookup_key(var_name, source_pattern)
             if lookup_key not in self.missing_gql_objects:
                 try:
                     missing = CustomObject()
                     missing.set_name(lookup_key)
-                    missing.set_type('GqlUnresolvedDefinition')
+                    missing.set_type('JsGqlUnresolvedDefinition')
                     if caller_kb:
                         missing.set_parent(caller_kb)
                     missing.save()
                     self.missing_gql_objects[lookup_key] = missing
-                    log.info('[GraphQL JS] GqlUnresolvedDefinition: ' + lookup_key)
+                    log.info('[GraphQL JS] JsGqlUnresolvedDefinition: ' + lookup_key)
                 except Exception:
                     pass
 

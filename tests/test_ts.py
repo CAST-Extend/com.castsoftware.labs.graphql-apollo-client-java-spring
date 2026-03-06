@@ -2146,9 +2146,9 @@ export default DataComponent
         MODULE 13 — Angular this.apollo.* calls (Pattern 3)
 
         Simulates an Angular service that injects the Apollo service and calls:
-          - this.apollo.query({ query: CONST })        → GraphQLApolloHookQuery  (useQuery)
-          - this.apollo.mutate({ mutation: CONST })    → GraphQLApolloHookMutation (useMutation)
-          - this.apollo.watchQuery({ query: CONST })   → GraphQLApolloHookLazyQuery (useLazyQuery)
+          - this.apollo.query({ query: CONST })        → TsGraphQLApolloAngularQuery  (angular)
+          - this.apollo.mutate({ mutation: CONST })    → TsGraphQLApolloAngularMutation (angular)
+          - this.apollo.watchQuery({ query: CONST })   → TsGraphQLApolloAngularWatchQuery (angular)
 
         The 'this.apollo' receiver is discriminated from plain 'client.*' calls via the
         presence of the 'apollo' token in the MethodCall node's string representation.
@@ -2160,9 +2160,9 @@ export default DataComponent
  *
  * Angular service pattern using the Apollo service injected via the constructor.
  * Covers the three Angular-specific Apollo methods mapped to hook types:
- *   query       -> useQuery  (GraphQLApolloHookQuery)
- *   mutate      -> useMutation (GraphQLApolloHookMutation)
- *   watchQuery  -> useLazyQuery (GraphQLApolloHookLazyQuery)
+ *   query       -> useQuery  (TsGraphQLApolloAngularQuery)
+ *   mutate      -> useMutation (TsGraphQLApolloAngularMutation)
+ *   watchQuery  -> useLazyQuery (TsGraphQLApolloAngularWatchQuery)
  */
 
 import { Injectable } from '@angular/core';
@@ -2249,9 +2249,9 @@ export class UserService {
         self.assertEqual(len(gql_defs), 3,
                          "3 gql`` template consts should produce 3 GQL definitions")
         def_op_names = {d.operation_name for d in gql_defs}
-        self.assertIn('GetUsers',   def_op_names, "GET_USERS const should produce GqlQuery 'GetUsers'")
-        self.assertIn('CreateUser', def_op_names, "CREATE_USER const should produce GqlMutation 'CreateUser'")
-        self.assertIn('WatchUsers', def_op_names, "WATCH_USERS const should produce GqlQuery 'WatchUsers'")
+        self.assertIn('GetUsers',   def_op_names, "GET_USERS const should produce TsGqlQuery 'GetUsers'")
+        self.assertIn('CreateUser', def_op_names, "CREATE_USER const should produce TsGqlMutation 'CreateUser'")
+        self.assertIn('WatchUsers', def_op_names, "WATCH_USERS const should produce TsGqlQuery 'WatchUsers'")
 
         # ── Pattern 3: Angular this.apollo.* hooks ───────────────────────────────
         self.assertEqual(len(apollo_analysis_results.apollo_hooks_by_operation), 3,

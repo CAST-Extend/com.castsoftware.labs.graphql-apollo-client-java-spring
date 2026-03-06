@@ -64,13 +64,13 @@ class TestLocalKb(unittest.TestCase):
         kb = server.get_schema('testtsgql_local')
         application = kb.get_application('TestTSgql')
         print("type(app) = {}".format(type(application)))
-        gql_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlQuery')
-        gql_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlMutation')
-        # gql_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GqlSubscription')
-        # hook_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookQuery')
-        # hook_lazy_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookLazyQuery')
-        # hook_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookMutation')
-        # hook_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() == 'GraphQLApolloHookSubscription')
+        gql_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGqlQuery', 'JsGqlQuery'))
+        gql_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGqlMutation', 'JsGqlMutation'))
+        # gql_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGqlSubscription', 'JsGqlSubscription'))
+        # hook_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGraphQLApolloHookQuery', 'JsGraphQLApolloHookQuery'))
+        # hook_lazy_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGraphQLApolloHookLazyQuery', 'JsGraphQLApolloHookLazyQuery'))
+        # hook_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGraphQLApolloHookMutation', 'JsGraphQLApolloHookMutation'))
+        # hook_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGraphQLApolloHookSubscription', 'JsGraphQLApolloHookSubscription'))
 
 
 
@@ -83,7 +83,7 @@ class TestLocalKb(unittest.TestCase):
         mutationrequest = mutationrequests[0]
         # reactJSFunctionComponent = reactJSFunctionComponents[0]
         # Fetch CAST_Java_AnnotationMetrics.Annotation for each method
-        print("\n=== GqlQuery ===")
+        print("\n=== TsGqlQuery / JsGqlQuery ===")
         for idx, request in enumerate(clientqueries, start=1):
             print("\n=== ClientQuery {} ===".format(idx))
             print("Name: {}".format(request.get_name()))
@@ -91,7 +91,7 @@ class TestLocalKb(unittest.TestCase):
             # To get all properties for debugging:
             self.debug_print_all_object_properties(request)
 
-        print("\n=== GqlMutation ===")
+        print("\n=== TsGqlMutation / JsGqlMutation ===")
         for idx, request in enumerate(clientmutations, start=1):
             print("\n=== ClientMutation {} ===".format(idx))
             print("Name: {}".format(request.get_name()))
@@ -266,11 +266,11 @@ class TestLocalKb(unittest.TestCase):
                                         
                                         # Déterminer le type d'opération attendu basé sur le client_def
                                         expected_annotation = None
-                                        if client_def.get_type() == 'GqlQuery':
+                                        if client_def.get_type() in ('TsGqlQuery', 'JsGqlQuery'):
                                             expected_annotation = '@QueryMapping'
-                                        elif client_def.get_type() == 'GqlMutation':
+                                        elif client_def.get_type() in ('TsGqlMutation', 'JsGqlMutation'):
                                             expected_annotation = '@MutationMapping'
-                                        elif client_def.get_type() == 'GqlSubscription':
+                                        elif client_def.get_type() in ('TsGqlSubscription', 'JsGqlSubscription'):
                                             expected_annotation = '@SubscriptionMapping'
                                         
                                         has_graphql_annotation = any(expected_annotation in str(ann) for ann in annotations) if annotations and expected_annotation else False

@@ -200,66 +200,67 @@
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<!-- GraphQL Client Operations - LEVEL 1: gql definitions -->
-	<!-- Note: These objects have JavaScript/React parents, not GraphQL parents -->
-	<!-- So we don't declare a tree parent to avoid Enlighten tree errors -->
-	<type name="GqlQuery" rid="21">
-		<description>GraphQL gql Query Definition</description>
+	<!-- Js* types are created by the JavaScript analyzer; Ts* types by the TypeScript analyzer -->
+	<!-- No tree parent declared to avoid Enlighten tree errors (parent is JS/TS file) -->
+	<type name="JsGqlQuery" rid="21">
+		<description>JS GraphQL gql Query Definition</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
-	<type name="GqlMutation" rid="22">
-		<description>GraphQL gql Mutation Definition</description>
+	<type name="JsGqlMutation" rid="22">
+		<description>JS GraphQL gql Mutation Definition</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
-	<type name="GqlSubscription" rid="24">
-		<description>GraphQL gql Subscription Definition</description>
+	<type name="JsGqlSubscription" rid="24">
+		<description>JS GraphQL gql Subscription Definition</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Client_Definition"/>
 	</type>
-	<type name="GqlUnresolvedDefinition" rid="31">
-		<description>Unresolved GQL definition</description>
+	<type name="JsGqlUnresolvedDefinition" rid="31">
+		<description>JS Unresolved GQL definition</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<!-- GraphQL Apollo Hook Requests - LEVEL 2: hook usage -->
-	<type name="GraphQLApolloHookQuery" rid="25">
-		<description>Apollo useQuery Hook Call</description>
+	<!-- Js* types are created by the JavaScript analyzer; Ts* types by the TypeScript analyzer -->
+	<type name="JsGraphQLApolloHookQuery" rid="25">
+		<description>JS Apollo useQuery Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
-	<type name="GraphQLApolloHookLazyQuery" rid="26">
-		<description>Apollo useLazyQuery Hook Call</description>
+	<type name="JsGraphQLApolloHookLazyQuery" rid="26">
+		<description>JS Apollo useLazyQuery Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
-	<type name="GraphQLApolloHookMutation" rid="27">
-		<description>Apollo useMutation Hook Call</description>
+	<type name="JsGraphQLApolloHookMutation" rid="27">
+		<description>JS Apollo useMutation Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
-	<type name="GraphQLApolloHookSubscription" rid="28">
-		<description>Apollo useSubscription Hook Call</description>
+	<type name="JsGraphQLApolloHookSubscription" rid="28">
+		<description>JS Apollo useSubscription Hook Call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
@@ -267,66 +268,196 @@
 		<inheritedCategory name="GraphQL_Hook_Request"/>
 	</type>
 	<!-- Apollo Client imperative method calls (Pattern 1) -->
-	<type name="GraphQLApolloClientQuery" rid="32">
-		<description>Apollo Client query call</description>
+	<!-- Js* types are created by the JavaScript analyzer; Ts* types by the TypeScript analyzer -->
+	<type name="JsGraphQLApolloClientQuery" rid="32">
+		<description>JS Apollo Client query call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
-	<type name="GraphQLApolloClientMutation" rid="33">
-		<description>Apollo Client mutation call</description>
+	<type name="JsGraphQLApolloClientMutation" rid="33">
+		<description>JS Apollo Client mutation call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
-	<type name="GraphQLApolloClientSubscription" rid="34">
-		<description>Apollo Client subscription call</description>
+	<type name="JsGraphQLApolloClientSubscription" rid="34">
+		<description>JS Apollo Client subscription call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<!-- Apollo Codegen generated hook calls (Pattern 2) -->
-	<type name="GraphQLApolloCodegenQuery" rid="35">
-		<description>Apollo Codegen query hook</description>
+	<!-- Js* types are created by the JavaScript analyzer; Ts* types by the TypeScript analyzer -->
+	<type name="JsGraphQLApolloCodegenQuery" rid="35">
+		<description>JS Apollo Codegen query hook</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
-	<type name="GraphQLApolloCodegenMutation" rid="36">
-		<description>Apollo Codegen mutation hook</description>
+	<type name="JsGraphQLApolloCodegenMutation" rid="36">
+		<description>JS Apollo Codegen mutation hook</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
-	<type name="GraphQLApolloCodegenSubscription" rid="37">
-		<description>Apollo Codegen subscription hook</description>
+	<type name="JsGraphQLApolloCodegenSubscription" rid="37">
+		<description>JS Apollo Codegen subscription hook</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<!-- Angular Apollo service calls (Pattern 3) -->
-	<type name="GraphQLApolloAngularQuery" rid="38">
-		<description>Angular Apollo query call (this.apollo.query)</description>
+	<!-- Js* types are created by the JavaScript analyzer; Ts* types by the TypeScript analyzer -->
+	<type name="JsGraphQLApolloAngularQuery" rid="38">
+		<description>JS Angular Apollo query call (this.apollo.query)</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
-	<type name="GraphQLApolloAngularMutation" rid="39">
-		<description>Angular Apollo mutation call (this.apollo.mutate)</description>
+	<type name="JsGraphQLApolloAngularMutation" rid="39">
+		<description>JS Angular Apollo mutation call (this.apollo.mutate)</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
-	<type name="GraphQLApolloAngularWatchQuery" rid="40">
-		<description>Angular Apollo watchQuery call (this.apollo.watchQuery)</description>
+	<type name="JsGraphQLApolloAngularWatchQuery" rid="40">
+		<description>JS Angular Apollo watchQuery call (this.apollo.watchQuery)</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<!-- TypeScript equivalents (Ts prefix, rids 41-57) -->
+	<type name="TsGqlQuery" rid="41">
+		<description>TS GraphQL gql Query Definition</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Client_Definition"/>
+	</type>
+	<type name="TsGqlMutation" rid="42">
+		<description>TS GraphQL gql Mutation Definition</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Client_Definition"/>
+	</type>
+	<type name="TsGqlSubscription" rid="43">
+		<description>TS GraphQL gql Subscription Definition</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Client_Definition"/>
+	</type>
+	<type name="TsGqlUnresolvedDefinition" rid="44">
+		<description>TS Unresolved GQL definition</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloHookQuery" rid="45">
+		<description>TS Apollo useQuery Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
+	</type>
+	<type name="TsGraphQLApolloHookLazyQuery" rid="46">
+		<description>TS Apollo useLazyQuery Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
+	</type>
+	<type name="TsGraphQLApolloHookMutation" rid="47">
+		<description>TS Apollo useMutation Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
+	</type>
+	<type name="TsGraphQLApolloHookSubscription" rid="48">
+		<description>TS Apollo useSubscription Hook Call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_Hook_Request"/>
+	</type>
+	<type name="TsGraphQLApolloClientQuery" rid="49">
+		<description>TS Apollo Client query call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloClientMutation" rid="50">
+		<description>TS Apollo Client mutation call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloClientSubscription" rid="51">
+		<description>TS Apollo Client subscription call</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloCodegenQuery" rid="52">
+		<description>TS Apollo Codegen query hook</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloCodegenMutation" rid="53">
+		<description>TS Apollo Codegen mutation hook</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloCodegenSubscription" rid="54">
+		<description>TS Apollo Codegen subscription hook</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloAngularQuery" rid="55">
+		<description>TS Angular Apollo query call (this.apollo.query)</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloAngularMutation" rid="56">
+		<description>TS Angular Apollo mutation call (this.apollo.mutate)</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="TsGraphQLApolloAngularWatchQuery" rid="57">
+		<description>TS Angular Apollo watchQuery call (this.apollo.watchQuery)</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>

@@ -8,7 +8,7 @@ This extension analyzes TypeScript files for GraphQL usage patterns.
 Similar to the JavaScript analyzer, it processes TypeScript content to extract
 GraphQL definitions and Apollo hook calls.
 
-LEVEL 1: gql definitions (GqlQuery/Mutation/Subscription)
+LEVEL 1: gql definitions (TsGqlQuery/TsGqlMutation/TsGqlSubscription)
   - Extracts gql`...` template literals
   - Creates objects for query/mutation/subscription definitions
   
@@ -78,7 +78,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Pending useLinks: hooks processed before their GQL definition file (Bug 2)
         self.pending_links = []  # List of (request_obj, operation_name, caller_file_kb)
 
-        # Dedup cache for GqlUnresolvedDefinition objects (keyed by operation_name)
+        # Dedup cache for TsGqlUnresolvedDefinition objects (keyed by operation_name)
         self.missing_gql_objects = {}
 
         # Scope-keyed variable resolution: (file_path, var_name, id(parent_symbol)) -> op_name.
@@ -360,7 +360,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
 
     def _create_gql_definition (self, gql_def, source_file):
         """
-        LEVEL 1: Create GraphQL client definition object (GqlQuery/GqlMutation/GqlSubscription).
+        LEVEL 1: Create GraphQL client definition object (TsGqlQuery/TsGqlMutation/TsGqlSubscription).
         
         Same logic as graphql_javascript_analyzer.py _create_gql_definition ()
         
@@ -378,14 +378,14 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             # Step 1: Determine object type based on operation type (same as JS analyzer)
             op_type = gql_def.operation_type
             if op_type == 'query':
-                object_type = 'GqlQuery'
+                object_type = 'TsGqlQuery'
             elif op_type == 'mutation':
-                object_type = 'GqlMutation'
+                object_type = 'TsGqlMutation'
             elif op_type == 'subscription':
-                object_type = 'GqlSubscription'
+                object_type = 'TsGqlSubscription'
             else:
                 log.warning('[GraphQL TS Client] Unknown operation type: ' + str(op_type))
-                object_type = 'GqlQuery'  # fallback
+                object_type = 'TsGqlQuery'  # fallback
             
             variable_name = gql_def.name
             # Use the GQL operation name as the KB object name (e.g. "GetLambdaInvocations").
@@ -484,22 +484,21 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             self.failed_objects.append({'name': _track_name, 'type': _track_type, 'file_path': _track_file})
     
     # Map (source_pattern, hook_name) -> metamodel type name.
-    # React hooks use the existing GraphQLApolloHook* types.
-    # Patterns 1/2/3 use the new dedicated types.
+    # All TS types use the Ts* prefix to distinguish from JS equivalents.
     _HOOK_TYPE_MAP = {
-        ('react_hook',    'useQuery'):        'GraphQLApolloHookQuery',
-        ('react_hook',    'useLazyQuery'):    'GraphQLApolloHookLazyQuery',
-        ('react_hook',    'useMutation'):     'GraphQLApolloHookMutation',
-        ('react_hook',    'useSubscription'): 'GraphQLApolloHookSubscription',
-        ('client_method', 'useQuery'):        'GraphQLApolloClientQuery',
-        ('client_method', 'useMutation'):     'GraphQLApolloClientMutation',
-        ('client_method', 'useSubscription'): 'GraphQLApolloClientSubscription',
-        ('angular_method','useQuery'):        'GraphQLApolloAngularQuery',
-        ('angular_method','useMutation'):     'GraphQLApolloAngularMutation',
-        ('angular_method','useLazyQuery'):    'GraphQLApolloAngularWatchQuery',
-        ('codegen_hook',  'useQuery'):        'GraphQLApolloCodegenQuery',
-        ('codegen_hook',  'useMutation'):     'GraphQLApolloCodegenMutation',
-        ('codegen_hook',  'useSubscription'): 'GraphQLApolloCodegenSubscription',
+        ('react_hook',    'useQuery'):        'TsGraphQLApolloHookQuery',
+        ('react_hook',    'useLazyQuery'):    'TsGraphQLApolloHookLazyQuery',
+        ('react_hook',    'useMutation'):     'TsGraphQLApolloHookMutation',
+        ('react_hook',    'useSubscription'): 'TsGraphQLApolloHookSubscription',
+        ('client_method', 'useQuery'):        'TsGraphQLApolloClientQuery',
+        ('client_method', 'useMutation'):     'TsGraphQLApolloClientMutation',
+        ('client_method', 'useSubscription'): 'TsGraphQLApolloClientSubscription',
+        ('angular_method','useQuery'):        'TsGraphQLApolloAngularQuery',
+        ('angular_method','useMutation'):     'TsGraphQLApolloAngularMutation',
+        ('angular_method','useLazyQuery'):    'TsGraphQLApolloAngularWatchQuery',
+        ('codegen_hook',  'useQuery'):        'TsGraphQLApolloCodegenQuery',
+        ('codegen_hook',  'useMutation'):     'TsGraphQLApolloCodegenMutation',
+        ('codegen_hook',  'useSubscription'): 'TsGraphQLApolloCodegenSubscription',
     }
 
     # Map (source_pattern, hook_name) -> visible name prefix used in set_name().
@@ -555,8 +554,8 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             object_type = self._HOOK_TYPE_MAP.get((source_pattern, hook_name))
             if not object_type:
                 log.warning('[GraphQL TS Client] Unknown (source_pattern, hook_name): (' +
-                            source_pattern + ', ' + hook_name + ') — falling back to GraphQLApolloHookQuery')
-                object_type = 'GraphQLApolloHookQuery'
+                            source_pattern + ', ' + hook_name + ') — falling back to TsGraphQLApolloHookQuery')
+                object_type = 'TsGraphQLApolloHookQuery'
             _track_type = object_type
             
             # Step 2: Get parent component (KB object).
@@ -701,7 +700,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
     
     def _create_missing_gql_definition(self, request_obj, operation_name, caller_file_kb):
         """
-        Create (or reuse) a GqlUnresolvedDefinition object for a hook whose GQL definition
+        Create (or reuse) a TsGqlUnresolvedDefinition object for a hook whose GQL definition
         was never found in any analyzed file.
 
         Deduplication: one object per operation_name regardless of how many hooks reference it.
@@ -710,23 +709,23 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         try:
             if operation_name not in self.missing_gql_objects:
                 missing_obj = CustomObject()
-                missing_obj.set_type('GqlUnresolvedDefinition')
+                missing_obj.set_type('TsGqlUnresolvedDefinition')
                 missing_obj.set_name(operation_name)
                 missing_obj.set_fullname('[missing]:' + operation_name)
                 if caller_file_kb:
                     missing_obj.set_parent(caller_file_kb)
                 missing_obj.save()
                 self.missing_gql_objects[operation_name] = missing_obj
-                log.info('[GraphQL TS Client] Created GqlUnresolvedDefinition: ' + operation_name)
-                self.created_objects.append({'name': operation_name, 'type': 'GqlUnresolvedDefinition',
+                log.info('[GraphQL TS Client] Created TsGqlUnresolvedDefinition: ' + operation_name)
+                self.created_objects.append({'name': operation_name, 'type': 'TsGqlUnresolvedDefinition',
                                              'file_path': str(caller_file_kb)})
             else:
                 missing_obj = self.missing_gql_objects[operation_name]
-                log.info('[GraphQL TS Client] Reusing GqlUnresolvedDefinition: ' + operation_name)
+                log.info('[GraphQL TS Client] Reusing TsGqlUnresolvedDefinition: ' + operation_name)
             create_link("useLink", request_obj, missing_obj)
             log.info('[GraphQL TS Client]   ✓ useLink: hook -> [unresolved] ' + operation_name)
         except Exception as e:
-            log.warning('[GraphQL TS Client] Error creating GqlUnresolvedDefinition for "' +
+            log.warning('[GraphQL TS Client] Error creating TsGqlUnresolvedDefinition for "' +
                         operation_name + '": ' + str(e))
             log.warning(traceback.format_exc())
 
@@ -781,7 +780,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                                     operation_name + '": ' + str(link_ex))
                 else:
                     log.info('[GraphQL TS Client]   ✗ Still unresolved: "' + operation_name +
-                             '" — creating GqlUnresolvedDefinition')
+                             '" — creating TsGqlUnresolvedDefinition')
                     still_unresolved.append((request_obj, operation_name, caller_file_kb, source_pattern))
             for (request_obj, operation_name, caller_file_kb, _) in still_unresolved:
                 self._create_missing_gql_definition(

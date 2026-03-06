@@ -50,7 +50,7 @@ class ApolloHookSymbol(Symbol):
         """
         # Do not create KB objects here - they are created manually
         # in graphql_typescript_analyzer.py with the correct types
-        # (GqlQuery, GqlMutation, GqlSubscription)
+        # (TsGqlQuery, TsGqlMutation, TsGqlSubscription)
         pass
 
     def __repr__(self):
