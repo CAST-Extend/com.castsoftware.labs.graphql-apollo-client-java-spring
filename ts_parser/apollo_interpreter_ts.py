@@ -62,41 +62,38 @@ def analyse_ts_fragment(ts_fragment, apollo_analysis_results):
     """
     Main entry point for analyzing a TypeScript fragment for Apollo Client usage.
     Similar to analyse_ts_fragment in vue_basic_interpreter_ts.py
-    
+
     Args:
         ts_fragment: TypeScript SourceFile to analyze
         apollo_analysis_results: ApolloAnalysisResults instance to store results
-        
+
     Returns:
         ApolloBasicInterpreterTS instance or None on error
     """
-    log.info('*** analyse_ts_fragment() called for: {} ***'.format(ts_fragment.get_fullname()))
     try:
         interpreter = ApolloBasicInterpreterTS(ts_fragment, apollo_analysis_results)
         apollo_analysis_results.ts_files.append(ts_fragment)
-        log.info('Created interpreter and appended to ts_files')
-        
+
         # Create walker and register interpreter
         walker = Walker()
         walker.register_interpreter(interpreter)
-        
+
         # Get AST fragments
         fragments = ts_fragment._ast_fragments
         if not fragments:
             fragments = [ts_fragment.get_ast()]
-        
+
         # Walk through all fragments
         for frag in fragments:
             walker.walk(frag.get_children())
-        
+
         # Post-processing after walking the AST
         interpreter.on_end()
-        log.info('Completed interpreter.on_end()')
-        
+
         return interpreter
-    except:
-        log.info("Problem during analysis of ts_fragment for Apollo Client")
-        log.info(traceback.format_exc())
+    except Exception:
+        log.warning("Problem during analysis of ts_fragment for Apollo Client")
+        log.warning(traceback.format_exc())
         return None
 
 
@@ -907,8 +904,9 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                 log.info('      First child has no get_name() method')
             
             return None
-            
-        except:
+
+        except Exception as e:
+            log.info('[Apollo TS] extract_operation_name failed: ' + str(e))
             return None
 
     def extract_inline_gql(self, func_call):

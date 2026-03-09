@@ -1,0 +1,351 @@
+# -*- coding: utf-8 -*-
+"""
+GraphQL Node.js Apollo Server Analyzer
+
+Detects Apollo Server patterns in JavaScript files and creates KB objects:
+
+  - NodeJsApolloSchema: inline typeDefs (const typeDefs = gql`type Query {...}`)
+    Created only in files that import an Apollo Server package.
+
+  - NodeJsResolver: one resolver function per field
+    (const resolvers = { Query: { users: ... }, Mutation: { createUser: ... } })
+    Created in ALL JS files — the resolver object pattern is self-selecting.
+
+Architecture (mirrors graphql_javascript_analyzer.py):
+  Phase 0 (start_javascript_content): collect all jsContent objects
+  Phase 1 (end_javascript_contents): typeDefs → NodeJsApolloSchema (server files only)
+  Phase 2 (end_javascript_contents): resolvers → NodeJsResolver (all JS files)
+
+Links are created in graphql_application_level.py:
+  GraphQLField -callLink-> NodeJsResolver  (matched by operationType + fieldName)
+"""
+
+import re
+from cast.analysers import ua, log, CustomObject, create_link
+from cast import Event
+
+
+# ─────────────────────────────────────────────────── constants ────────────────
+
+# npm package names that identify Apollo Server files
+_APOLLO_SERVER_PACKAGES = frozenset({
+    'apollo-server',
+    '@apollo/server',
+    'apollo-server-express',
+    'apollo-server-core',
+    'apollo-server-lambda',
+    'apollo-server-koa',
+    'apollo-server-fastify',
+    'apollo-server-hapi',
+    'apollo-server-micro',
+    'apollo-server-azure-functions',
+})
+
+# GraphQL operation type sections found inside resolver maps
+_OPERATION_TYPES = ('Query', 'Mutation', 'Subscription')
+
+# Special resolver keys that are meta-resolvers, not field resolvers
+_SKIP_FIELD_NAMES = frozenset({'__resolveType', '__isTypeOf', 'subscribe'})
+
+# Variable names that typically carry the Apollo Server typeDefs
+_TYPEDEFS_VAR_NAMES = frozenset({'typedefs', 'type_defs', 'types', 'schema'})
+
+
+# ─────────────────────────────────────────────────── AST helpers ──────────────
+
+def _node_children(node):
+    """Return get_children() as a list, or [] on error."""
+    try:
+        return list(node.get_children())
+    except Exception:
+        return []
+
+
+def _walk(node, callback):
+    """Depth-first recursive walk; callback is called on every descendant."""
+    for child in _node_children(node):
+        callback(child)
+        _walk(child, callback)
+
+
+def _is_object_value(node):
+    """Return True if node is an ObjectValue (has get_item + is_object_value)."""
+    return (hasattr(node, 'is_object_value')
+            and callable(getattr(node, 'is_object_value', None))
+            and node.is_object_value())
+
+
+def _is_function_call(node):
+    """Return True if node is a FunctionCall."""
+    return (hasattr(node, 'is_function_call')
+            and callable(getattr(node, 'is_function_call', None))
+            and node.is_function_call())
+
+
+# ─────────────────────────────────────────────────── main class ───────────────
+
+class GraphQLNodeJsAnalyzer(ua.Extension):
+    """
+    Node.js Apollo Server analyzer: detects typeDefs and resolver maps in JS files.
+
+    Subscribes to the same com.castsoftware.html5 events as the JS client analyzer.
+    Does NOT detect client-side hooks (those are in graphql_javascript_analyzer.py).
+    """
+
+    def __init__(self):
+        self._all_contents    = []   # all collected jsContent objects
+        self._server_contents = []   # subset: files that import ApolloServer
+        self._created = 0
+        self._failed  = 0
+
+    # ──────────────────────────────────────────── event handlers ──────────────
+
+    @Event('com.castsoftware.html5', 'start_javascript_content')
+    def _on_start(self, jsContent):
+        """Collect every jsContent; flag server files by ApolloServer import."""
+        try:
+            self._all_contents.append(jsContent)
+            if self._is_server_file(jsContent):
+                self._server_contents.append(jsContent)
+                log.info('[GraphQL NodeJs] Server file detected: '
+                         + str(jsContent.get_file()))
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] start error: ' + str(e))
+
+    @Event('com.castsoftware.html5', 'end_javascript_contents')
+    def _on_end(self):
+        """Two-phase extraction: typeDefs then resolvers."""
+        log.info('[GraphQL NodeJs] Analyzing '
+                 + str(len(self._all_contents)) + ' JS file(s), '
+                 + str(len(self._server_contents)) + ' server file(s)')
+
+        # Phase 1 — typeDefs → NodeJsApolloSchema (server files only)
+        for jsc in self._server_contents:
+            try:
+                self._extract_typedefs(jsc)
+            except Exception as e:
+                log.warning('[GraphQL NodeJs] Phase 1 error in '
+                            + str(jsc.get_file()) + ': ' + str(e))
+
+        # Phase 2 — resolver maps → NodeJsResolver (all JS files)
+        for jsc in self._all_contents:
+            try:
+                self._extract_resolvers(jsc)
+            except Exception as e:
+                log.warning('[GraphQL NodeJs] Phase 2 error in '
+                            + str(jsc.get_file()) + ': ' + str(e))
+
+        log.info('[GraphQL NodeJs] Done — '
+                 + str(self._created) + ' created, '
+                 + str(self._failed)  + ' failed')
+
+    # ──────────────────────────────────────────── server file detection ────────
+
+    def _is_server_file(self, jsContent):
+        """Return True if the file imports any known Apollo Server package."""
+        try:
+            for imp in jsContent.get_imports():
+                try:
+                    from_name = imp.get_from_name()
+                    if not from_name:
+                        continue
+                    if from_name in _APOLLO_SERVER_PACKAGES:
+                        return True
+                    # Catch apollo-server-* variants not listed above
+                    if from_name.startswith('apollo-server'):
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return False
+
+    # ──────────────────────────────────────────── gql alias detection ──────────
+
+    def _gql_aliases(self, jsContent):
+        """Return the set of local names bound to the gql template tag."""
+        aliases = {'gql'}
+        try:
+            for imp in jsContent.get_imports():
+                try:
+                    what = imp.get_what_name()
+                    if what != 'gql':
+                        continue
+                    local = None
+                    try:
+                        local = imp.get_alias_name()
+                    except Exception:
+                        pass
+                    aliases.add(local or what)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return aliases
+
+    # ──────────────────────────────────────────── Phase 1: typeDefs ────────────
+
+    def _extract_typedefs(self, jsContent):
+        """
+        Detect  const typeDefs = gql`type Query {...}`  in server files.
+        Creates one NodeJsApolloSchema KB object per typeDefs assignment.
+
+        readFileSync-based schemas are already parsed from .graphql SDL files
+        by graphql_analyser_level.py, so they are intentionally skipped here.
+        """
+        gql_aliases = self._gql_aliases(jsContent)
+
+        def visit(node):
+            try:
+                if not _is_function_call(node):
+                    return
+                call_name = node.get_name()
+                if call_name not in gql_aliases:
+                    return
+                var_name = self._get_var_name(node)
+                if not var_name:
+                    return
+                # Accept any variable whose name matches common typeDefs conventions
+                if var_name.lower() not in _TYPEDEFS_VAR_NAMES:
+                    return
+                self._create_apollo_schema(var_name, node, jsContent)
+            except Exception as e:
+                log.info('[GraphQL NodeJs] typeDefs visitor error: ' + str(e))
+
+        _walk(jsContent, visit)
+
+    def _get_var_name(self, gql_node):
+        """Walk up the AST to find the variable name in  const VAR = gql`...`."""
+        current = gql_node
+        for _ in range(12):
+            try:
+                parent = (current.get_parent()
+                          if hasattr(current, 'get_parent') else None)
+                if parent is None:
+                    break
+                if hasattr(parent, 'is_assignment') and parent.is_assignment():
+                    left = parent.get_left_operand()
+                    if left and hasattr(left, 'get_name'):
+                        name = left.get_name()
+                        if name and name not in ('unknown', 'const', 'let', 'var'):
+                            return name
+                current = parent
+            except Exception:
+                break
+        return None
+
+    def _create_apollo_schema(self, var_name, ast_node, jsContent):
+        """Create a NodeJsApolloSchema KB object for an inline typeDefs."""
+        try:
+            parent_kb = jsContent.get_kb_object()
+            if parent_kb is None:
+                self._failed += 1
+                return
+
+            obj = CustomObject()
+            obj.set_name(var_name)
+            obj.set_type('NodeJsApolloSchema')
+            obj.set_parent(parent_kb)
+            obj.save()
+
+            try:
+                obj.save_position(ast_node.create_bookmark(jsContent.get_file()))
+            except Exception as bm_e:
+                log.info('[GraphQL NodeJs] ApolloSchema bookmark failed for "'
+                         + var_name + '": ' + str(bm_e))
+
+            self._created += 1
+            log.info('[GraphQL NodeJs] Created NodeJsApolloSchema: ' + var_name
+                     + ' in ' + str(jsContent.get_file()))
+
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] Failed NodeJsApolloSchema "'
+                        + var_name + '": ' + str(e))
+            self._failed += 1
+
+    # ──────────────────────────────────────────── Phase 2: resolvers ───────────
+
+    def _extract_resolvers(self, jsContent):
+        """
+        Walk the jsContent AST looking for resolver maps:
+
+          { Query: { fieldName: (parent, args, ctx) => {...} },
+            Mutation: { createX: async (...) => {...} },
+            Subscription: { eventX: { subscribe: ... } } }
+
+        Creates one NodeJsResolver KB object per resolver field name + op type.
+        Deduplication is done within the file by (op_type, field_name).
+        """
+        found = []   # list of (op_type, field_name, key_ast_node)
+
+        def visit(node):
+            if not _is_object_value(node):
+                return
+            for op_type in _OPERATION_TYPES:
+                try:
+                    type_section = node.get_item(op_type)
+                    if type_section is None:
+                        continue
+                    if not _is_object_value(type_section):
+                        continue
+                    items_dict = type_section.get_items_dictionary()
+                    if not items_dict:
+                        continue
+                    for key_ident, _value_node in items_dict.items():
+                        try:
+                            field_name = (key_ident.get_name()
+                                          if hasattr(key_ident, 'get_name')
+                                          else str(key_ident))
+                            if (field_name
+                                    and field_name not in _SKIP_FIELD_NAMES
+                                    and field_name != 'unknown'):
+                                found.append((op_type, field_name, key_ident))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        _walk(jsContent, visit)
+
+        if not found:
+            return
+
+        # Dedup within file: keep first occurrence of each (op_type, field_name)
+        seen = set()
+        for op_type, field_name, key_node in found:
+            pair = (op_type, field_name)
+            if pair not in seen:
+                seen.add(pair)
+                self._create_resolver(op_type, field_name, key_node, jsContent)
+
+    def _create_resolver(self, op_type, field_name, ast_node, jsContent):
+        """Create a NodeJsResolver KB object for one resolver function."""
+        try:
+            parent_kb = jsContent.get_kb_object()
+            if parent_kb is None:
+                self._failed += 1
+                return
+
+            obj = CustomObject()
+            obj.set_name(field_name)
+            obj.set_type('NodeJsResolver')
+            obj.set_parent(parent_kb)
+            obj.save()
+
+            try:
+                obj.save_position(ast_node.create_bookmark(jsContent.get_file()))
+            except Exception as bm_e:
+                log.info('[GraphQL NodeJs] Resolver bookmark failed for "'
+                         + op_type + '.' + field_name + '": ' + str(bm_e))
+
+            obj.save_property('GraphQL_NodeJs_Resolver.operationType', op_type)
+            obj.save_property('GraphQL_NodeJs_Resolver.fieldName', field_name)
+
+            self._created += 1
+            log.info('[GraphQL NodeJs] Created NodeJsResolver: '
+                     + op_type + '.' + field_name)
+
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] Failed NodeJsResolver "'
+                        + op_type + '.' + field_name + '": ' + str(e))
+            self._failed += 1

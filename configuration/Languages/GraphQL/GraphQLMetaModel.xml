@@ -470,4 +470,38 @@
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
+	<!-- ========================================================= -->
+	<!--       NODE.JS APOLLO SERVER (server-side)                 -->
+	<!-- ========================================================= -->
+	<!-- Category for Node.js resolver properties -->
+	<category name="GraphQL_NodeJs_Resolver" rid="58">
+		<description>Node.js Apollo Server resolver function</description>
+		<property name="operationType" type="string" rid="107">
+			<description>GraphQL operation type (Query, Mutation, Subscription)</description>
+			<attribute name="INF_TYPE" intValue="2135107"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="fieldName" type="string" rid="108">
+			<description>GraphQL field name this resolver handles</description>
+			<attribute name="INF_TYPE" intValue="2135108"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+	</category>
+	<!-- NodeJsApolloSchema: inline typeDefs in a Node.js Apollo Server file -->
+	<type name="NodeJsApolloSchema" rid="59">
+		<description>Node.js Apollo Server inline typeDefs schema</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<!-- NodeJsResolver: one resolver function (e.g. Query.users) -->
+	<type name="NodeJsResolver" rid="60">
+		<description>Node.js Apollo Server resolver function</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
 </metaModel>

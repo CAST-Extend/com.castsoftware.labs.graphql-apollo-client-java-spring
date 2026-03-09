@@ -68,7 +68,6 @@ class GraphQLAnalyzerExtension(ua.Extension):
         except Exception as e:
             # Fallback for unit tests where get_ua_options() may not be available
             log.debug('[GraphQL] Using default configuration: ' + str(e))
-            pass
     
     def start_file(self, file):
         """
