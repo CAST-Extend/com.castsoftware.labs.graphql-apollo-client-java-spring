@@ -341,12 +341,12 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             obj.set_type(op_type)
             obj.set_parent(parent_kb)
 
+            obj.save()
+
             try:
                 obj.save_position(ast_node.create_bookmark(jsContent.get_file()))
             except Exception:
                 pass
-
-            obj.save()
 
             obj.save_property('GraphQL_Client_Definition.operationName', op_name)
             obj.save_property('GraphQL_Client_Definition.rawQueryText',  raw_text)
@@ -499,14 +499,14 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             obj.set_type(hook_type)
             obj.set_parent(parent_kb)
 
+            obj.save()
+
             bm = None
             try:
                 bm = ast_node.create_bookmark(jsContent.get_file())
                 obj.save_position(bm)
             except Exception:
                 pass
-
-            obj.save()
 
             # hookType property only for React hook types (mirrors TS behavior)
             if source_pattern == _PAT_REACT:
