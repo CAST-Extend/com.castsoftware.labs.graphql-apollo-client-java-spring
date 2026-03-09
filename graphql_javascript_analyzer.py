@@ -411,6 +411,46 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                             last_name, kb_type, last_name, last_name,
                             _PAT_CODEGEN, node, jsContent)
 
+                    # ── Direct client: client.query/mutate({...}) ──
+                    # HTML5 AST represents client.query(X) as n_parts=1, last='query'
+                    # (the receiver is not in the FunctionCall parts).
+                    # _object_arg() discriminates by requiring {query:/mutation: VAR}.
+                    elif last_name in _CLIENT_METHODS:
+                        kb_type, display = _CLIENT_METHODS[last_name]
+                        obj_keys = (['mutation'] if last_name == 'mutate'
+                                    else ['query', 'mutation', 'subscription'])
+                        # ── diagnostic: inspect AST structure ──────────────────
+                        try:
+                            _p = _part_params(parts[0])
+                            if _p:
+                                _kids = _node_children(_p[0])
+                                _kid_names = []
+                                for _k in _kids[:6]:
+                                    try:
+                                        _kid_names.append(
+                                            _k.get_name() if hasattr(_k, 'get_name') else type(_k).__name__)
+                                    except Exception:
+                                        _kid_names.append('?')
+                                log.info('[GraphQL JS CLIENT] method=' + last_name
+                                         + ' n_params=' + str(len(_p))
+                                         + ' obj_children=' + str(_kid_names))
+                            else:
+                                log.info('[GraphQL JS CLIENT] method=' + last_name
+                                         + ' n_params=0 (no args extracted)')
+                        except Exception as _de:
+                            log.info('[GraphQL JS CLIENT] diag error: ' + str(_de))
+                        # ────────────────────────────────────────────────────────
+                        var_name = self._object_arg(parts[0], obj_keys)
+                        if var_name:
+                            log.info('[GraphQL JS CLIENT] resolved var=' + var_name
+                                     + ' method=' + last_name)
+                            self._create_hook(
+                                display, kb_type, var_name, display,
+                                _PAT_CLIENT, node, jsContent)
+                        else:
+                            log.info('[GraphQL JS CLIENT] _object_arg failed method='
+                                     + last_name + ' keys=' + str(obj_keys))
+
                 elif n_parts >= 2:
                     penult = _part_name(parts[-2]) if n_parts >= 2 else None
 
