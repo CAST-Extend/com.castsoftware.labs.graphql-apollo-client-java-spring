@@ -74,7 +74,8 @@ _CODEGEN_SUFFIX_MAP = {
 # Import names that signal a file uses Apollo Client (used to filter jsContent)
 _FILTER_NAMES = (
     set(_APOLLO_HOOKS.keys())
-    | {'gql', 'Apollo', 'ApolloClient', 'InMemoryCache', 'ApolloProvider'}
+    | {'gql', 'Apollo', 'ApolloClient', 'InMemoryCache', 'ApolloProvider',
+       'useApolloClient'}
 )
 
 # Source pattern tags (mirrors TS _HOOK_TYPE_MAP source_pattern keys)
@@ -196,10 +197,12 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 try:
                     what = imp.get_what_name()
                     local = what
-                    if hasattr(imp, 'get_local_name'):
-                        loc = imp.get_local_name()
-                        if loc:
-                            local = loc
+                    try:
+                        alias = imp.get_alias_name()
+                        if alias:
+                            local = alias
+                    except Exception:
+                        pass
                     if what == 'gql':
                         aliases.add(local)
                 except Exception:
@@ -241,7 +244,6 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
 
                 op_type, op_name, variables, fields = self._parse_gql_content(text)
                 if op_name is None:
-                    log.info('[GraphQL JS] No operation name found in: ' + text[:80])
                     return
 
                 self._create_gql_def(
@@ -345,8 +347,8 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
 
             try:
                 obj.save_position(ast_node.create_bookmark(jsContent.get_file()))
-            except Exception:
-                pass
+            except Exception as e:
+                log.info('[GraphQL JS] save_position failed for "' + op_name + '": ' + str(e))
 
             obj.save_property('GraphQL_Client_Definition.operationName', op_name)
             obj.save_property('GraphQL_Client_Definition.rawQueryText',  raw_text)
@@ -365,9 +367,6 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 log.warning('[GraphQL JS] var_name collision: "' + var_name
                             + '" already → "' + self.var_name_to_op_name[var_name]
                             + '"; new op "' + op_name + '" stored, hook lookup uses first')
-
-            log.info('[GraphQL JS] Created ' + op_type
-                     + ' "' + op_name + '" (var: ' + var_name + ')')
         except Exception as e:
             log.warning('[GraphQL JS] Failed to create GQL def "'
                         + op_name + '": ' + str(e))
@@ -386,10 +385,20 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 if not parts:
                     return
 
-                n_parts  = len(parts)
+                n_parts   = len(parts)
                 last_name = _part_name(parts[-1])
                 if last_name is None:
                     return
+
+                # Diagnostic: log when a potentially relevant method name is seen
+                if (last_name in _APOLLO_HOOKS or last_name in _CLIENT_METHODS
+                        or last_name in _ANGULAR_METHODS
+                        or _CODEGEN_PATTERN.match(last_name)):
+                    penult_diag = (_part_name(parts[-2])
+                                   if n_parts >= 2 else '<none>')
+                    log.info('[GraphQL JS] FC n_parts=' + str(n_parts)
+                             + ' last=' + last_name
+                             + ' penult=' + str(penult_diag))
 
                 if n_parts == 1:
                     # ── React hooks: useQuery(VAR) etc. ──
@@ -405,25 +414,44 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     elif _CODEGEN_PATTERN.match(last_name):
                         suffix   = _CODEGEN_PATTERN.match(last_name).group(1)
                         kb_type  = _CODEGEN_SUFFIX_MAP[suffix]
-                        # For codegen the var_name IS the full function name;
-                        # base-name extraction happens in _create_hook / Phase 3.
                         self._create_hook(
                             last_name, kb_type, last_name, last_name,
                             _PAT_CODEGEN, node, jsContent)
 
-                    # ── Direct client: client.query/mutate({...}) ──
-                    # HTML5 AST represents client.query(X) as n_parts=1, last='query'
-                    # (the receiver is not in the FunctionCall parts).
+                    # ── Single-part client method: mutate({mutation:VAR}) / query({query:VAR})
+                    # Fallback for when HTML5 AST returns only the method part without
+                    # the receiver (e.g. 'mutate' alone instead of ['client','mutate']).
                     elif last_name in _CLIENT_METHODS:
                         kb_type, display = _CLIENT_METHODS[last_name]
-                        var_name = self._object_arg(parts[0])
+                        obj_keys = (['mutation'] if last_name == 'mutate'
+                                    else ['query', 'mutation', 'subscription'])
+                        var_name = self._object_arg(parts[0], obj_keys)
                         if var_name:
+                            log.info('[GraphQL JS] client method (1-part): '
+                                     + display + ' → ' + var_name)
                             self._create_hook(
                                 display, kb_type, var_name, display,
                                 _PAT_CLIENT, node, jsContent)
 
+
+                    # ── Single-part Angular: watchQuery({query:VAR}) when penult='apollo'
+                    # is not available (but name matches an angular method).
+                    # Note: 'query' and 'mutate' are caught by _CLIENT_METHODS above;
+                    # this branch activates primarily for 'watchQuery'.
+                    elif last_name in _ANGULAR_METHODS:
+                        kb_type, display = _ANGULAR_METHODS[last_name]
+                        obj_keys = (['mutation'] if last_name == 'mutate'
+                                    else ['query', 'mutation', 'subscription'])
+                        var_name = self._object_arg(parts[0], obj_keys)
+                        if var_name:
+                            log.info('[GraphQL JS] angular method (1-part): '
+                                     + display + ' → ' + var_name)
+                            self._create_hook(
+                                display, kb_type, var_name, display,
+                                _PAT_ANGULAR, node, jsContent)
+
                 elif n_parts >= 2:
-                    penult = _part_name(parts[-2]) if n_parts >= 2 else None
+                    penult = _part_name(parts[-2])
 
                     # ── Angular: this.apollo.method({ query/mutation: VAR }) ──
                     if penult == 'apollo' and last_name in _ANGULAR_METHODS:
@@ -453,26 +481,105 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         params = _part_params(first_part)
         if not params:
             return None
-        return self._ident_name(params[0])
+        param = params[0]
+        # Bug 5 guard: if arg is itself a function call (e.g. useQuery(useMemo(...))),
+        # skip — avoids creating misleading "useQuery:useMemo" objects.
+        if hasattr(param, 'is_function_call') and param.is_function_call():
+            return None
+        return self._ident_name(param)
 
-    def _object_arg(self, last_part):
+    def _object_arg(self, last_part, keys=('query', 'mutation', 'subscription')):
         """
         For apollo.query({ query: VAR, ... }): extract VAR from the object literal.
 
-        HTML5 AST: {mutation: VAR} children expose the VALUE identifier name via
-        get_name(), NOT the property key name. The key ('mutation', 'query') returns
-        None from get_name(). So we take the first non-None/non-keyword child name
-        directly — it is the GQL variable identifier (e.g. BULK_DELETE_TRANSACTIONS).
+        Method 1: ObjectValue.get_item(key) — the correct CAST HTML5 API used by
+        the NodeJS resolver extractor.  Works when the argument is an ObjectValue node.
+
+        Method 2 (fallback): walks AST children looking for property nodes whose
+        get_name() returns one of `keys`.
+
+        Method 3 (fallback): searches the string repr of the first parameter for
+        the pattern "key: IDENTIFIER".
         """
         params = _part_params(last_part)
+        log.info('[GraphQL JS] _object_arg: last_part type=' + str(type(last_part))
+                 + ' str=' + str(last_part)[:200]
+                 + ' repr=' + repr(str(last_part))[:200])
+        log.info('[GraphQL JS] _object_arg: keys=' + str(keys)
+                 + ' params_count=' + str(len(params)))
         if not params:
+            log.info('[GraphQL JS] _object_arg: no params, returning None')
             return None
         obj_node = params[0]
+        log.info('[GraphQL JS] _object_arg: obj_node type=' + str(type(obj_node))
+                 + ' repr=' + repr(str(obj_node))[:200])
+        log.info('[GraphQL JS] _object_arg: obj_node has is_object_value='
+                 + str(hasattr(obj_node, 'is_object_value')))
 
+        # Method 1: ObjectValue.get_item(key) — mirrors NodeJS resolver extraction
+        try:
+            if (hasattr(obj_node, 'is_object_value')
+                    and callable(getattr(obj_node, 'is_object_value', None))
+                    and obj_node.is_object_value()):
+                log.info('[GraphQL JS] _object_arg: Method1 — is_object_value=True')
+                for key in keys:
+                    try:
+                        val = obj_node.get_item(key)
+                        log.info('[GraphQL JS] _object_arg: Method1 get_item("'
+                                 + key + '") → type=' + str(type(val))
+                                 + ' repr=' + repr(str(val))[:120])
+                        if val is not None:
+                            n = self._ident_name(val)
+                            log.info('[GraphQL JS] _object_arg: Method1 _ident_name="' + str(n) + '"')
+                            if n:
+                                return n
+                    except Exception as e:
+                        log.info('[GraphQL JS] _object_arg: Method1 get_item("'
+                                 + key + '") exception: ' + str(e))
+            else:
+                log.info('[GraphQL JS] _object_arg: Method1 skipped — is_object_value='
+                         + str(obj_node.is_object_value()
+                               if hasattr(obj_node, 'is_object_value') else 'N/A'))
+        except Exception as e:
+            log.info('[GraphQL JS] _object_arg: Method1 outer exception: ' + str(e))
+
+        # Method 2: walk children (works if property nodes have get_name() == key)
+        log.info('[GraphQL JS] _object_arg: Method2 — walking '
+                 + str(len(_node_children(obj_node))) + ' children')
         for child in _node_children(obj_node):
-            n = self._ident_name(child)
-            if n:
-                return n
+            try:
+                child_name = (child.get_name()
+                              if hasattr(child, 'get_name') else None)
+                log.info('[GraphQL JS] _object_arg: Method2 child name='
+                         + str(child_name) + ' type=' + str(type(child)))
+                if child_name in keys:
+                    for val in _node_children(child):
+                        n = self._ident_name(val)
+                        log.info('[GraphQL JS] _object_arg: Method2 val _ident_name="' + str(n) + '"')
+                        if n:
+                            return n
+            except Exception as e:
+                log.info('[GraphQL JS] _object_arg: Method2 child exception: ' + str(e))
+
+        # Method 3: string-repr fallback — search "key: IDENTIFIER" in node repr
+        try:
+            text = str(obj_node)
+            log.info('[GraphQL JS] _object_arg: Method3 — repr[:200]=' + repr(text)[:200])
+            for key in keys:
+                m = re.search(
+                    r'\b' + re.escape(key) + r'\s*:\s*([A-Za-z_][A-Za-z0-9_]*)',
+                    text)
+                if m:
+                    name = m.group(1)
+                    log.info('[GraphQL JS] _object_arg: Method3 matched key="'
+                             + key + '" name="' + name + '"')
+                    if name not in ('unknown', 'null', 'undefined', 'gql',
+                                    'true', 'false', 'function'):
+                        return name
+        except Exception as e:
+            log.info('[GraphQL JS] _object_arg: Method3 exception: ' + str(e))
+
+        log.info('[GraphQL JS] _object_arg: all methods failed, returning None')
         return None
 
     def _ident_name(self, node):
@@ -505,8 +612,8 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             try:
                 bm = ast_node.create_bookmark(jsContent.get_file())
                 obj.save_position(bm)
-            except Exception:
-                pass
+            except Exception as e:
+                log.info('[GraphQL JS] bookmark failed for "' + display_name + ':' + var_name + '": ' + str(e))
 
             # hookType property only for React hook types (mirrors TS behavior)
             if source_pattern == _PAT_REACT:
@@ -516,8 +623,8 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             if bm:
                 try:
                     create_link('callLink', parent_kb, obj, bm)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.info('[GraphQL JS] callLink failed for "' + display_name + ':' + var_name + '": ' + str(e))
 
             self._created += 1
 
@@ -526,13 +633,9 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
 
             if lookup_key in self.gql_definitions:
                 create_link('useLink', obj, self.gql_definitions[lookup_key])
-                log.info('[GraphQL JS] useLink: '
-                         + display_name + ':' + var_name + ' → ' + lookup_key)
             else:
                 self.pending_links.append(
                     (obj, var_name, jsContent.get_kb_object(), source_pattern))
-                log.info('[GraphQL JS] Queued pending: '
-                         + display_name + ':' + var_name)
 
         except Exception as e:
             log.warning('[GraphQL JS] Failed to create hook "'
@@ -548,8 +651,8 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     kb = first.get_kb_object()
                     if kb:
                         return kb
-        except Exception:
-            pass
+        except Exception as e:
+            log.info('[GraphQL JS] get_first_kb_parent error, using file KB: ' + str(e))
         return jsContent.get_kb_object()
 
     def _resolve_lookup_key(self, var_name, source_pattern):
@@ -584,8 +687,6 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             if lookup_key in self.gql_definitions:
                 try:
                     create_link('useLink', hook_obj, self.gql_definitions[lookup_key])
-                    log.info('[GraphQL JS] Resolved: "'
-                             + var_name + '" → "' + lookup_key + '"')
                 except Exception as e:
                     log.warning('[GraphQL JS] Pending link error: ' + str(e))
             else:
@@ -603,13 +704,12 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                         missing.set_parent(caller_kb)
                     missing.save()
                     self.missing_gql_objects[lookup_key] = missing
-                    log.info('[GraphQL JS] JsGqlUnresolvedDefinition: ' + lookup_key)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning('[GraphQL JS] JsGqlUnresolvedDefinition creation failed for "' + lookup_key + '": ' + str(e))
 
             if lookup_key in self.missing_gql_objects:
                 try:
                     create_link('useLink', hook_obj,
                                 self.missing_gql_objects[lookup_key])
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.info('[GraphQL JS] useLink to unresolved failed for "' + lookup_key + '": ' + str(e))
