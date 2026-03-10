@@ -35,6 +35,24 @@ APOLLO_CLIENT_METHODS = ['query', 'mutate', 'subscribe']
 # Pattern: use[UpperCamelCase](Query|Mutation|Subscription)
 CODEGEN_HOOK_PATTERN = re.compile(r'^use[A-Z][A-Za-z0-9]+(Query|Mutation|Subscription)$')
 
+# ─── Structured log helpers ────────────────────────────────────────────────────
+# Format: [GraphQL][TS][<STAGE>][<ENTITY>][ctx=N] message
+# DETECT   → a GraphQL/Apollo pattern was recognized in the AST
+# DECISION → the analyzer inferred semantics or chose a code branch
+# RESULT   → a CAST object or link was created / registered
+
+_ctx_seq = [0]
+
+
+def _ctx():
+    _ctx_seq[0] += 1
+    return _ctx_seq[0]
+
+
+def _glog(stage, entity, ctx, msg):
+    log.info('[GraphQL][TS][{}][{}][ctx={}] {}'.format(stage, entity, ctx, msg))
+
+
 # ─── PATTERN 3: Angular this.apollo.* calls ───────────────────────────────────
 # Maps the Apollo service method name to the normalized React hook name.
 # watchQuery → useLazyQuery (both are "lazy" / deferred execution patterns).
@@ -164,8 +182,6 @@ class BaseFrameworkInterpreter:
         @type _ast_class: typescript_parser.parser.Class
         """
         _class = self._get_current_symbol().get_class(_ast_class.get_name(), _ast_class.get_begin_line())
-        if not _class:
-            log.info("No class found for %s under %s" % (str(_ast_class.get_name()), str(self._get_current_symbol().get_fullname())))
         # Guard: never push None — re-push the current symbol so end_Class still pops correctly
         self.push_symbol(_class or self._get_current_symbol())
 
@@ -177,8 +193,6 @@ class BaseFrameworkInterpreter:
         @type _ast: typescript_parser.parser.Namespace
         """
         namespace = self._get_current_symbol().get_namespace(_ast.get_name())
-        if not namespace:
-            log.info("No namespace found for %s under %s" % (str(_ast.get_name()), str(self._get_current_symbol().get_fullname())))
         self.push_symbol(namespace or self._get_current_symbol())
 
     def end_Namespace(self, _ast_namespace):
@@ -189,8 +203,6 @@ class BaseFrameworkInterpreter:
         @type _ast: typescript_parser.parser.Interface
         """
         interface = self._get_current_symbol().get_interface(_ast.get_name())
-        if not interface:
-            log.info("No interface found for %s under %s" % (str(_ast.get_name()), str(self._get_current_symbol().get_fullname())))
         self.push_symbol(interface or self._get_current_symbol())
 
     def end_Interface(self, _ast):
@@ -214,8 +226,6 @@ class BaseFrameworkInterpreter:
         """
         name = _ast_function.get_name()
         function = self._get_current_symbol().get_function(name, _ast_function.get_begin_line())
-        if not function:
-            log.info("No function found for %s under %s" % (str(name), str(self._get_current_symbol().get_fullname())))
         self.push_symbol(function or self._get_current_symbol())
 
     def end_Function(self, _ast_function):
@@ -227,8 +237,6 @@ class BaseFrameworkInterpreter:
         """
         name = _ast_method.get_name()
         method = self._get_current_symbol().get_method(name, _ast_method.get_begin_line())
-        if not method:
-            log.info("No method found for %s under %s" % (str(name), str(self._get_current_symbol().get_fullname())))
         self.push_symbol(method or self._get_current_symbol())
 
     def end_Method(self, _ast_method):
@@ -261,24 +269,9 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         """
         Called after walking the AST. Perform final processing.
         """
-        log.info('SourceFile: {}'.format(self.module.get_fullname()))
-
-        # Extract all GQL definitions first
-        log.info('Starting extract_all_gql_definitions...')
         self.extract_all_gql_definitions()
-        log.info('Finished extract_all_gql_definitions. Found {} definitions'.format(
-            len(self.apollo_analysis_results.gql_definitions_by_name)))
-
-        # Then extract all Apollo hooks
-        log.info('Starting extract_all_apollo_hooks...')
         self.extract_all_apollo_hooks()
-        log.info('Finished extract_all_apollo_hooks. Found {} hooks'.format(
-            len(self.apollo_analysis_results.apollo_hooks_by_operation)))
-
-        # Create links between hooks and GQL definitions
-        log.info('Starting create_hook_to_gql_links...')
         self.create_hook_to_gql_links()
-        log.info('=== ApolloBasicInterpreterTS.on_end() finished ===')
 
     def find_parent_symbol_for_ast_node(self, ast_node):
         """
@@ -327,8 +320,6 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                     if range_size < best_range:
                         best_range = range_size
                         best_match = symbol
-                        log.info('    Found potential parent: {} (line {}-{})'.format(
-                            symbol.get_fullname(), start_line, end_line))
 
         return best_match
 
@@ -338,22 +329,11 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         """
         try:
             ast = self.module.get_ast()
-            log.info('  extract_all_gql_definitions: searching for gql definitions...')
             if not ast:
-                log.info('  No AST found for module')
                 return
-            
+
             # Find all variable declarations
             var_declarations = get_descendants(ast, 'VariableDeclaration')
-            log.info('  Found {} VariableDeclaration nodes'.format(len(var_declarations)))
-            for _i, _vd in enumerate(var_declarations):
-                try:
-                    _line = _vd.get_begin_line() if hasattr(_vd, 'get_begin_line') else '?'
-                    _name = _vd.get_name() if hasattr(_vd, 'get_name') else '?'
-                    log.info('    [VarDecl #{}] name={!r}  line={}  type={}'.format(
-                        _i, _name, _line, type(_vd).__name__))
-                except Exception as _e:
-                    log.info('    [VarDecl #{}] (error reading info: {})'.format(_i, _e))
 
             for var_decl in var_declarations:
                 # First try: setup only — if var_name/expr_statements fail, skip this var_decl
@@ -363,21 +343,12 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                     # Skip inline gql in hooks (var_name = None)
                     # These will be handled by extract_all_apollo_hooks
                     if var_name is None:
-                        log.info('    Skipping inline gql (var_name = None)')
                         continue
 
                     # Look for gql`...` tagged template (ExpressionStatement with gql identifier)
                     expr_statements = get_descendants(var_decl, 'ExpressionStatement')
-                    log.info('  --- Processing VarDecl name={!r} line={} | {} ExpressionStatements'.format(
-                        var_name,
-                        var_decl.get_begin_line() if hasattr(var_decl, 'get_begin_line') else '?',
-                        len(expr_statements)))
-                    for _j, _es in enumerate(expr_statements):
-                        _es_line = _es.get_begin_line() if hasattr(_es, 'get_begin_line') else '?'
-                        log.info('     ExprStmt #{}: line={}'.format(_j, _es_line))
                 except Exception as setup_ex:
-                    log.info('  Exception in var_decl setup: {}'.format(str(setup_ex)))
-                    log.info(traceback.format_exc())
+                    log.warning('[GraphQL][TS] GQL def setup error: {}'.format(str(setup_ex)))
                     continue
 
                 # Second try: scanning loop — exceptions here do NOT skip the Bug 3 fallback
@@ -392,10 +363,8 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                         for sub_node in expr_stmt.get_sub_nodes():
                             if hasattr(sub_node, 'get_name') and sub_node.get_name() == 'gql':
                                 has_gql = True
-                                log.info('    Found gql identifier in ExpressionStatement')
                             elif is_ts_node_type(sub_node, 'StringTemplate'):
                                 string_template = sub_node
-                                log.info('    Found StringTemplate in ExpressionStatement')
 
                         # Fallback for the `as` cast pattern: `const X = gql\`...\` as TypedDocumentNode<...>`
                         # In this case 'gql' is a bare Token (not a Node) inside the ExpressionStatement,
@@ -404,7 +373,6 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                             expr_str = str(expr_stmt)
                             if "Token.Generic,'gql'" in expr_str or 'Token.Generic,"gql"' in expr_str:
                                 has_gql = True
-                                log.info('    Found gql Token (as-cast fallback) in ExpressionStatement')
 
                         # Deep fallback: for assignment-type ExpressionStatements like
                         #   `POST_PUBLISHED = gql\`...\` as Type`
@@ -415,12 +383,10 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                             nested = get_descendants(expr_stmt, 'StringTemplate')
                             if nested:
                                 string_template = nested[0]
-                                log.info('    Found StringTemplate via deep scan in ExpressionStatement')
                         if string_template is not None and not has_gql:
                             expr_str = str(expr_stmt)
                             if "Token.Generic,'gql'" in expr_str or 'Token.Generic,"gql"' in expr_str:
                                 has_gql = True
-                                log.info('    Found gql Token (deep scan fallback) in ExpressionStatement')
 
                         if has_gql and string_template:
                             # Determine the effective variable name for this ExpressionStatement.
@@ -438,22 +404,23 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                                         and expr_name != var_name
                                         and str(expr_name).replace('_', '').isalnum()):
                                     effective_var_name = expr_name
-                                    log.info('    Merged-VarDecl: using per-ExprStmt name={!r} (VarDecl name={!r})'.format(
-                                        effective_var_name, var_name))
                             except Exception:
                                 pass
 
                             # Deduplicate: skip if we already registered this name in this VarDecl
                             if effective_var_name in processed_names:
-                                log.info('    Skipping duplicate definition for {!r}'.format(effective_var_name))
                                 continue
 
-                            log.info('  ✓ Found gql`...` tagged template in variable: {}'.format(effective_var_name))
+                            _c = _ctx()
+                            _line = var_decl.get_begin_line() if hasattr(var_decl, 'get_begin_line') else '?'
+                            _glog('DETECT', 'GqlDef', _c, 'gql`` found: var={} line={}'.format(effective_var_name, _line))
 
                             graphql_metadata = self.parse_graphql_content(string_template)
-                            log.info('    Parsed GraphQL metadata: {}'.format(graphql_metadata))
 
                             if graphql_metadata.get('operationName'):
+                                _glog('DECISION', 'GqlDef', _c, 'op={} name={}'.format(
+                                    graphql_metadata.get('operationType', '?'),
+                                    graphql_metadata['operationName']))
                                 ast_node = expr_stmt if effective_var_name != var_name else var_decl
                                 # Create GqlDefinition object
                                 raw_bookmark = RawBookmark(ast_node, self.module)
@@ -495,19 +462,15 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                                 if parent_symbol != self.module:
                                     self.module.add_symbol(effective_var_name, gql_symbol)
 
-                                log.info('  ✓ Created GQL definition: {} -> {}'.format(
+                                _glog('RESULT', 'GqlDef', _c, 'registered {} → {}'.format(
                                     effective_var_name, graphql_metadata['operationName']))
-                                log.info('  ✓ Added GqlDefinitionSymbol to parent: {}'.format(parent_symbol.get_fullname()))
                                 processed_names.add(effective_var_name)
                                 definition_found = True
                                 # No break — keep iterating to handle merged VarDecl case where
                                 # multiple `const X = gql\`...\` as Type` declarations without
                                 # semicolons are all nested under one VarDecl node.
-                            else:
-                                log.info('    No operationName found in GraphQL metadata')
                 except Exception as inner_ex:
-                    log.info('  Exception in expr_stmt loop for {}: {}'.format(var_name, str(inner_ex)))
-                    log.info(traceback.format_exc())
+                    log.warning('[GraphQL][TS] GQL def scan error for {!r}: {}'.format(var_name, str(inner_ex)))
                     # Do NOT continue — let the Bug 3 fallback run below
 
                 # Bug 3 fallback: `as` cast moves StringTemplate outside ExpressionStatement.
@@ -515,8 +478,6 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                 # ExpressionStatement. Search for StringTemplate anywhere inside the
                 # VariableDeclaration and verify at least one ExpressionStatement holds
                 # the `gql` identifier (ensuring this is a gql`...` call, not a plain template).
-                log.info('  definition_found={} for var_name={!r} — entering Bug3 fallback check'.format(
-                    definition_found, var_name))
                 if not definition_found:
                     string_templates_in_decl = get_descendants(var_decl, 'StringTemplate')
                     if string_templates_in_decl:
@@ -537,14 +498,14 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                             var_decl_str = str(var_decl)
                             if "Token.Generic,'gql'" in var_decl_str or 'Token.Generic,"gql"' in var_decl_str:
                                 has_gql_in_decl = True
-                                log.info('  ✓ Bug3: gql found via var_decl repr for: {}'.format(var_name))
                         if has_gql_in_decl:
-                            log.info('  ✓ Bug3 fallback: as-cast pattern, using var-level StringTemplate for: {}'.format(var_name))
-                            self._register_gql_from_template(var_name, var_decl, string_templates_in_decl[0])
+                            _c = _ctx()
+                            _line = var_decl.get_begin_line() if hasattr(var_decl, 'get_begin_line') else '?'
+                            _glog('DETECT', 'GqlDef', _c, 'as-cast gql found: var={} line={}'.format(var_name, _line))
+                            self._register_gql_from_template(var_name, var_decl, string_templates_in_decl[0], _c)
                     
         except Exception as e:
-            log.info('Error extracting GQL definitions: {}'.format(str(e)))
-            log.info(traceback.format_exc())
+            log.warning('[GraphQL][TS] extract_all_gql_definitions error: {}'.format(str(e)))
 
     def parse_graphql_content(self, string_template):
         """
@@ -632,20 +593,18 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                 result['fieldsSelected'] = ', '.join(unique_fields)
 
         except Exception as e:
-            log.info('Error parsing GraphQL content: {}'.format(str(e)))
+            log.warning('[GraphQL][TS] parse_graphql_content error: {}'.format(str(e)))
 
         return result
 
-    def _register_gql_from_template(self, var_name, var_decl, string_template):
+    def _register_gql_from_template(self, var_name, var_decl, string_template, ctx=None):
         """
         Parse a StringTemplate and register the resulting GQL definition.
         Shared by the normal path and the Bug 3 as-cast fallback path.
         """
         graphql_metadata = self.parse_graphql_content(string_template)
-        log.info('    Parsed GraphQL metadata: {}'.format(graphql_metadata))
 
         if not graphql_metadata.get('operationName'):
-            log.info('    No operationName found in GraphQL metadata')
             return
 
         raw_bookmark = RawBookmark(string_template, self.module)
@@ -678,8 +637,10 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         if parent_symbol != self.module:
             self.module.add_symbol(var_name, gql_symbol)
 
-        log.info('  ✓ Created GQL definition: {} -> {}'.format(var_name, graphql_metadata['operationName']))
-        log.info('  ✓ Added GqlDefinitionSymbol to parent: {}'.format(parent_symbol.get_fullname()))
+        _c = ctx or _ctx()
+        _glog('DECISION', 'GqlDef', _c, 'op={} name={}'.format(
+            graphql_metadata.get('operationType', '?'), graphql_metadata['operationName']))
+        _glog('RESULT', 'GqlDef', _c, 'registered {} → {}'.format(var_name, graphql_metadata['operationName']))
 
     def extract_all_apollo_hooks(self):
         """
@@ -687,15 +648,12 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         """
         try:
             ast = self.module.get_ast()
-            log.info('  extract_all_apollo_hooks: searching for Apollo hooks...')
             if not ast:
-                log.info('  No AST found for module')
                 return
-            
+
             # Find all function calls
             func_calls = get_descendants(ast, 'FunctionCall')
-            log.info('  Found {} FunctionCall nodes total'.format(len(func_calls)))
-            
+
             for func_call in func_calls:
                 try:
                     hook_name = func_call.get_name()
@@ -715,27 +673,23 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                         codegen_match = CODEGEN_HOOK_PATTERN.match(hook_name)
                         if codegen_match:
                             self._process_codegen_hook(func_call, hook_name, codegen_match)
-                            continue
-                        # Not a codegen hook and not a standard hook → skip
-                        log.info('  Skipping non-Apollo hook: {}'.format(hook_name))
                         continue
 
                     # Check if it's an Apollo hook (standard: useQuery etc.)
                     if hook_name not in APOLLO_HOOKS:
-                        log.info('  Skipping non-Apollo hook: {}'.format(hook_name))
                         continue
-                    
-                    log.info('  Found Apollo hook call: {}'.format(hook_name))
+
+                    _c = _ctx()
+                    _line = func_call.get_begin_line() if hasattr(func_call, 'get_begin_line') else '?'
+                    _glog('DETECT', 'Hook', _c, '{} line={}'.format(hook_name, _line))
 
                     # Extract operation name
                     operation_name = self.extract_operation_name(func_call)
-                    
+
                     # Check for inline gql
                     is_inline = False
                     if not operation_name:
-                        log.info('    No outline operation, checking for inline gql...')
                         inline_name, inline_metadata = self.extract_inline_gql(func_call)
-                        log.info('    Extracted inline operation_name: {}'.format(inline_name))
                         if inline_name:
                             operation_name = inline_name
                             is_inline = True
@@ -775,10 +729,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                             if parent_symbol != self.module:
                                 self.module.add_symbol(inline_name + '_inline', inline_gql_symbol)
 
-                            log.info('    ✓ Added inline GqlDefinitionSymbol to parent: {}'.format(parent_symbol.get_fullname()))
-
                     if not operation_name:
-                        log.info('    Could not extract operation name from {} hook'.format(hook_name))
                         continue
                     
                     # Find the correct parent symbol BEFORE creating the hook object so it can
@@ -824,13 +775,11 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                     if parent_symbol != self.module:
                         self.module.add_symbol(operation_name, hook_symbol)
 
-                    log.info('  ✓ Created Apollo hook: {} with operation {}'.format(
-                        hook_name, operation_name))
-                    log.info('  ✓ Added ApolloHookSymbol to parent: {}'.format(parent_symbol.get_fullname()))
+                    _glog('DECISION', 'Hook', _c, '{} op={} inline={}'.format(hook_name, operation_name, is_inline))
+                    _glog('RESULT', 'Hook', _c, 'registered {}:{}'.format(hook_name, operation_name))
 
                 except Exception as inner_ex:
-                    log.info('  Exception in func_call loop: {}'.format(str(inner_ex)))
-                    log.info(traceback.format_exc())
+                    log.warning('[GraphQL][TS] Hook scan error: {}'.format(str(inner_ex)))
                     continue
                     
             # ═══════════════════════════════════════════════════════════════════
@@ -846,7 +795,6 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             # We scan MethodCall nodes here using a separate call to get_descendants.
             # ═══════════════════════════════════════════════════════════════════
             method_calls = get_descendants(ast, 'MethodCall')
-            log.info('  Found {} MethodCall nodes for P1/P3 scan'.format(len(method_calls)))
             for method_call in method_calls:
                 try:
                     method_name = method_call.get_name() if hasattr(method_call, 'get_name') else None
@@ -854,13 +802,11 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                         continue
                     self._process_receiver_method_call(method_call, method_name)
                 except Exception as mc_ex:
-                    log.info('  Exception in MethodCall loop: {}'.format(str(mc_ex)))
-                    log.info(traceback.format_exc())
+                    log.warning('[GraphQL][TS] MethodCall scan error: {}'.format(str(mc_ex)))
                     continue
 
         except Exception as e:
-            log.info('Error extracting Apollo hooks: {}'.format(str(e)))
-            log.info(traceback.format_exc())
+            log.warning('[GraphQL][TS] extract_all_apollo_hooks error: {}'.format(str(e)))
 
     def extract_operation_name(self, func_call):
         """
@@ -871,42 +817,34 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             # Get the arguments
             parentheses = get_descendants(func_call, 'Parenthesis')
             if not parentheses:
-                log.info('      No parentheses found')
                 return None
-            
+
             args_parenthesis = parentheses[0]
-            
+
             # Get first child
             first_child = None
             for child in args_parenthesis.get_sub_nodes():
                 first_child = child
                 break
 
-            
             if not first_child:
-                log.info('      No first child found')
                 return None
-            
+
             # If the first argument is itself a function call (e.g., useMemo(...)),
             # it is not a variable identifier. Skip it here — extract_inline_gql handles
             # the gql`...` case via ExpressionStatement detection.
             if is_ts_node_type(first_child, 'FunctionCall'):
-                log.info('      First child is a FunctionCall (not a variable ref) — skipping')
                 return None
 
             # Check if it's an identifier (outline case)
             if hasattr(first_child, 'get_name'):
                 operation_name = first_child.get_name()
-                log.info('      First child get_name(): {}'.format(operation_name))
                 if operation_name and operation_name != 'gql':
                     return operation_name
-            else:
-                log.info('      First child has no get_name() method')
-            
+
             return None
 
-        except Exception as e:
-            log.info('[Apollo TS] extract_operation_name failed: ' + str(e))
+        except Exception:
             return None
 
     def extract_inline_gql(self, func_call):
@@ -920,72 +858,52 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             # Get the arguments
             parentheses = get_descendants(func_call, 'Parenthesis')
             if not parentheses:
-                log.info('    extract_inline_gql: No Parenthesis found')
                 return (None, None)
-            
+
             args_parenthesis = parentheses[0]
-            
+
             # Get first child - if it's an ExpressionStatement, check for gql
             first_child = None
             for child in args_parenthesis.get_sub_nodes():
                 first_child = child
                 break
-            
+
             if not first_child:
-                log.info('    extract_inline_gql: No first child')
                 return (None, None)
-            
+
             # Check if first child is an ExpressionStatement (inline gql case)
             if is_ts_node_type(first_child, 'ExpressionStatement'):
-                log.info('    extract_inline_gql: First child is ExpressionStatement')
                 has_gql = False
                 string_template = None
-                
+
                 # Look for 'gql' token and StringTemplate in the ExpressionStatement
                 # Use get_children() instead of get_sub_nodes() to get both tokens and nodes
                 for child in first_child.get_children():
-                    log.info('      Checking child: {}'.format(type(child).__name__))
-                    
                     # Check for 'gql' identifier node
                     if is_ts_node_type(child, 'Identifier'):
                         node_name = child.get_name() if hasattr(child, 'get_name') else None
-                        log.info('      Identifier name: {}'.format(node_name))
                         if node_name == 'gql':
                             has_gql = True
-                            log.info('      Found gql identifier')
-                    
+
                     # Check for 'gql' token (direct Token object)
                     elif hasattr(child, '__class__') and 'Token' in child.__class__.__name__:
-                        # It's a Token - check if it says 'gql'
                         token_str = str(child)
                         if "'gql'" in token_str or '"gql"' in token_str or 'Token.Generic,\'gql\'' in token_str:
                             has_gql = True
-                            log.info('      Found gql token')
-                    
+
                     # Check for StringTemplate node
                     if is_ts_node_type(child, 'StringTemplate'):
                         string_template = child
-                        log.info('      Found StringTemplate')
-                
+
                 if has_gql and string_template:
-                    log.info('    extract_inline_gql: Found inline gql definition')
-                    # Parse the GraphQL content
                     metadata = self.parse_graphql_content(string_template)
                     operation_name = metadata.get('operationName')
-                    log.info('    extract_inline_gql: Parsed operation_name = {}'.format(operation_name))
-                    
                     if operation_name:
                         return (operation_name, metadata)
-                else:
-                    log.info('    extract_inline_gql: has_gql={}, string_template={}'.format(has_gql, string_template))
-            else:
-                log.info('    extract_inline_gql: First child is not ExpressionStatement, type={}'.format(type(first_child).__name__))
-            
+
             return (None, None)
-            
-        except Exception as e:
-            log.info('    extract_inline_gql: Exception: {}'.format(str(e)))
-            log.info(traceback.format_exc())
+
+        except Exception:
             return (None, None)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1034,7 +952,10 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         if parent_symbol != self.module:
             self.module.add_symbol(operation_name, hook_symbol)
 
-        log.info('  ✓ Codegen hook: {} -> {}'.format(hook_name, normalized_hook))
+        _c = _ctx()
+        _line = func_call.get_begin_line() if hasattr(func_call, 'get_begin_line') else '?'
+        _glog('DETECT', 'Hook', _c, 'codegen {} line={}'.format(hook_name, _line))
+        _glog('RESULT', 'Hook', _c, 'registered codegen {}:{}'.format(normalized_hook, hook_name))
 
     # ──────────────────────────────────────────────────────────────────────────
     # PATTERN 1 & 3 helpers — client.X() and this.apollo.X() method calls
@@ -1068,7 +989,6 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             excluded = {'GET', 'SET', 'ALL', 'ANY', 'MAP', 'NULL', 'TRUE',
                         'FALSE', 'STRING', 'INT', 'FLOAT', 'BOOLEAN', 'ID'}
             if candidate not in excluded:
-                log.info('    Extracted GQL var: {!r} (arg_key={!r})'.format(candidate, arg_key))
                 return candidate
         return None
 
@@ -1104,16 +1024,16 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             pattern_label = 'Pattern 1 (client.{})'.format(method_name)
 
         if not normalized_hook:
-            log.info('  {} — method not in map, skipping'.format(pattern_label))
             return
 
         # ── Extract the GQL document variable from the object arg ─────────────
         operation_name = self._extract_gql_var_from_node_str(node_str, method_name)
         if not operation_name:
-            log.info('  {} — could not extract GQL var, skipping'.format(pattern_label))
             return
 
-        log.info('  {} — detected: {}:{}'.format(pattern_label, normalized_hook, operation_name))
+        _c = _ctx()
+        _line = method_call.get_begin_line() if hasattr(method_call, 'get_begin_line') else '?'
+        _glog('DETECT', 'Hook', _c, '{} line={}'.format(pattern_label, _line))
 
         # ── Create ApolloHookObject (same class as standard hooks) ────────────
         parent_symbol = self.find_parent_symbol_for_ast_node(method_call)
@@ -1140,8 +1060,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         if parent_symbol != self.module:
             self.module.add_symbol(operation_name, hook_symbol)
 
-        log.info('  ✓ {} hook: {} -> {}:{}'.format(
-            'Angular' if is_angular else 'Client', method_name, normalized_hook, operation_name))
+        _glog('RESULT', 'Hook', _c, 'registered {}:{}'.format(normalized_hook, operation_name))
 
     def create_hook_to_gql_links(self):
         """

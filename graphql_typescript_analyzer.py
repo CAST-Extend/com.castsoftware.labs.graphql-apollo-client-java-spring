@@ -18,10 +18,21 @@ LEVEL 2: Apollo hook calls (GraphQL*Request)
   - Links to LEVEL 1 definitions
 """
 
-import traceback
 from cast.analysers import ua, log, CustomObject, Bookmark, create_link
 from cast import Event
-from datetime import datetime
+
+# ─── Structured log helpers ────────────────────────────────────────────────────
+# Format: [GraphQL][TS][<STAGE>][<ENTITY>][ctx=N] message
+_ctx_seq = [0]
+
+
+def _ctx():
+    _ctx_seq[0] += 1
+    return _ctx_seq[0]
+
+
+def _glog(stage, entity, ctx, msg):
+    log.info('[GraphQL][TS][{}][{}][ctx={}] {}'.format(stage, entity, ctx, msg))
 
 # Import from typescript_dependencies (local)
 from typescript_dependencies.symbols import SourceFile
@@ -43,19 +54,16 @@ def analyse(source_file):
     NOTE: For the real analyzer, the source_file is already parsed by the TypeScript analyzer.
     We don't need to parse it again.
     """
-    log.info('[GraphQL TS Client] Starting analysis of: ' + source_file.get_path())
-    
     # Create Apollo analysis results container
     apollo_analysis_results = ApolloAnalysisResults()
     apollo_analysis_results.ts_evaluation_tool = EvaluationTool()
-    
+
     # Analyze the source file for Apollo patterns
     source_file.parsing_results = analyse_ts_fragment(source_file, apollo_analysis_results)
-    
+
     # Create links between hooks and their GQL definitions
     apollo_analysis_results.create_links()
-    
-    log.info('[GraphQL TS Client] Analysis complete for: ' + source_file.get_path())
+
     return apollo_analysis_results
 
 
@@ -148,27 +156,24 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                             if fn_kb:
                                 self.ts_functions[fn_name] = fn_kb
             except Exception as sym_ex:
-                log.warning('[GraphQL TS Client] Error collecting function symbols: ' + str(sym_ex))
+                log.warning('[GraphQL][TS] Error collecting function symbols: ' + str(sym_ex))
 
-            # STEP 4: LEVEL 1 - Save GQL definitions to KB (same as JavaScript analyzer)
+            # STEP 4: LEVEL 1 - Save GQL definitions to KB
             for gql_def in gql_defs:
                 try:
-                    self._create_gql_definition (gql_def, source_file)
+                    self._create_gql_definition(gql_def, source_file)
                 except Exception as save_ex:
-                    log.warning('[GraphQL TS Client] Error saving GQL definition: ' + str(save_ex))
-                    log.warning(traceback.format_exc())
+                    log.warning('[GraphQL][TS] Error saving GQL definition: ' + str(save_ex))
 
-            # STEP 5: LEVEL 2 - Save Apollo hooks to KB (same as JavaScript analyzer)
+            # STEP 5: LEVEL 2 - Save Apollo hooks to KB
             for hook in hooks:
                 try:
                     self._create_hook_object(hook, source_file, apollo_analysis_results)
                 except Exception as save_ex:
-                    log.warning('[GraphQL TS Client] Error saving Apollo hook: ' + str(save_ex))
-                    log.warning(traceback.format_exc())
+                    log.warning('[GraphQL][TS] Error saving Apollo hook: ' + str(save_ex))
 
         except Exception as e:
-            log.warning('[GraphQL TS Client] Error processing file: ' + str(e))
-            log.warning(traceback.format_exc())
+            log.warning('[GraphQL][TS] Error processing file: ' + str(e))
     
     def _build_import_map_for_file(self, source_file):
         """
@@ -216,15 +221,15 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                         try:
                             local_name = elem.get_alias_name() or elem.get_element_name()
                         except Exception as e:
-                            log.warning('[GraphQL TS Client] import element name lookup failed: ' + str(e))
+                            log.warning('[GraphQL][TS] import element name lookup failed: ' + str(e))
                         if local_name:
                             key = (consumer_path, local_name)
                             if key not in self.imported_var_to_file:
                                 self.imported_var_to_file[key] = source_path
-                except Exception as elem_ex:
-                    log.info('[GraphQL TS Client] _build_import_map: skip import: ' + str(elem_ex))
+                except Exception:
+                    pass
         except Exception as ex:
-            log.warning('[GraphQL TS Client] _build_import_map_for_file failed: ' + str(ex))
+            log.warning('[GraphQL][TS] _build_import_map_for_file failed: ' + str(ex))
 
     def _resolve_variable_in_scope(self, variable_name, hook_parent_symbol, file_path):
         """
@@ -340,7 +345,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         _track_type = '(unknown)'
         _track_file = str(source_file.get_path())
         try:
-            # Step 1: Determine object type based on operation type (same as JS analyzer)
+            # Step 1: Determine object type based on operation type
             op_type = gql_def.operation_type
             if op_type == 'query':
                 object_type = 'TsGqlQuery'
@@ -349,7 +354,6 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             elif op_type == 'subscription':
                 object_type = 'TsGqlSubscription'
             else:
-                log.warning('[GraphQL TS Client] Unknown operation type: ' + str(op_type))
                 object_type = 'TsGqlQuery'  # fallback
 
             variable_name = gql_def.name
@@ -374,12 +378,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             client_obj.set_fullname(fullname)
 
             # Step 4: Set parent (file-level KB object)
-            # For GQL definitions, the parent is the file itself
             parent_kb = source_file.get_kb_object()
             if parent_kb:
                 client_obj.set_parent(parent_kb)
-            else:
-                log.warning('[GraphQL TS Client] No parent KB object found for file')
             
             # Step 5: Save object to KB (MUST be done before save_property)
             client_obj.save()
@@ -396,8 +397,8 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     bookmark = gql_def.raw_bookmark.get_bookmark()
                     if bookmark:
                         client_obj.save_position(bookmark)
-            except Exception as e:
-                log.warning('[GraphQL TS Client] Could not save bookmark: ' + str(e))
+            except Exception:
+                pass
             
             # Step 8: Store in cache for LEVEL 2 linking (keyed by operation name).
             # Also record variable_name -> kb_name mapping so hook lookup can resolve
@@ -422,13 +423,13 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             # Global fallback for cross-file (first-seen wins)
             if variable_name not in self.global_var_map:
                 self.global_var_map[variable_name] = kb_name
-            else:
-                log.warning('[GraphQL TS Client] var_name collision: "' + variable_name + '" in multiple scopes')
             self.created_objects.append({'name': kb_name, 'type': object_type, 'file_path': file_path})
-            
+
+            _c = _ctx()
+            _glog('RESULT', 'Object', _c, '{} "{}" created'.format(object_type, kb_name))
+
         except Exception as e:
-            log.warning('[GraphQL TS Client] Error creating definition: ' + str(e))
-            log.warning(traceback.format_exc())
+            log.warning('[GraphQL][TS] _create_gql_definition failed for "{}": {}'.format(_track_name, str(e)))
             self.failed_objects.append({'name': _track_name, 'type': _track_type, 'file_path': _track_file})
     
     # Map (source_pattern, hook_name) -> metamodel type name.
@@ -497,8 +498,6 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             # Step 1: Determine object type from (source_pattern, hook_name)
             object_type = self._HOOK_TYPE_MAP.get((source_pattern, hook_name))
             if not object_type:
-                log.warning('[GraphQL TS Client] Unknown (source_pattern, hook_name): (' +
-                            source_pattern + ', ' + hook_name + ')')
                 object_type = 'TsGraphQLApolloHookQuery'
             _track_type = object_type
 
@@ -530,7 +529,6 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 parent_kb = source_file.get_kb_object()
 
             if not parent_kb:
-                log.warning('[GraphQL TS Client] No parent KB object for hook')
                 return
             
             # Step 3: Build unique fullname (file:line format, same as JS analyzer)
@@ -556,6 +554,8 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
 
             # Step 6: Save object to KB (MUST be done before save_property)
             request_obj.save()
+            _c = _ctx()
+            _glog('RESULT', 'Object', _c, '{} "{}" created'.format(object_type, unique_request_name))
 
             # Step 7: Save properties (AFTER save()).
             # Only GraphQLApolloHook* types inherit GraphQL_Hook_Request (which defines hookType).
@@ -572,9 +572,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                         try:
                             create_link("callLink", parent_kb, request_obj, bookmark)
                         except Exception as link_ex:
-                            log.warning('[GraphQL TS Client] Could not create CALL link: ' + str(link_ex))
+                            log.warning('[GraphQL][TS] callLink failed for "{}": {}'.format(unique_request_name, str(link_ex)))
             except Exception as e:
-                log.warning('[GraphQL TS Client] Could not create bookmark/link: ' + str(e))
+                log.warning('[GraphQL][TS] bookmark/callLink failed for "{}": {}'.format(unique_request_name, str(e)))
 
             # Step 9: Create useLink (request -> GQL definition).
             # Codegen hooks do NOT get a useLink here — their chain is:
@@ -591,8 +591,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 else:
                     try:
                         create_link("useLink", request_obj, direct_obj)
+                        _glog('RESULT', 'Link', _c, 'useLink {} → {}'.format(unique_request_name, operation_name))
                     except Exception as link_ex:
-                        log.warning('[GraphQL TS Client] Failed to create useLink: ' + str(link_ex))
+                        log.warning('[GraphQL][TS] useLink failed for "{}": {}'.format(unique_request_name, str(link_ex)))
             else:
                 # Codegen hook: create callLink to the TS wrapper function so the chain
                 # codegen_obj → CALL → wrapper_function → CALL → useLazyQuery → USE → GqlDef is visible.
@@ -601,14 +602,13 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     try:
                         create_link("callLink", request_obj, fn_kb)
                     except Exception as link_ex:
-                        log.warning('[GraphQL TS Client] Failed to create codegen callLink: ' + str(link_ex))
+                        log.warning('[GraphQL][TS] codegen callLink failed for "{}": {}'.format(operation_name, str(link_ex)))
                 else:
                     self.pending_codegen_links.append((request_obj, operation_name))
             self.created_objects.append({'name': unique_request_name, 'type': object_type, 'file_path': file_path})
-            
+
         except Exception as e:
-            log.warning('[GraphQL TS Client] Error creating request: ' + str(e))
-            log.warning(traceback.format_exc())
+            log.warning('[GraphQL][TS] _create_hook_object failed for "{}": {}'.format(_track_name, str(e)))
             self.failed_objects.append({'name': _track_name, 'type': _track_type, 'file_path': _track_file})
     
     def _create_missing_gql_definition(self, request_obj, operation_name, caller_file_kb):
@@ -634,10 +634,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             else:
                 missing_obj = self.missing_gql_objects[operation_name]
             create_link("useLink", request_obj, missing_obj)
+            _glog('RESULT', 'Object', _ctx(), 'TsGqlUnresolvedDefinition "{}" created'.format(operation_name))
         except Exception as e:
-            log.warning('[GraphQL TS Client] Error creating TsGqlUnresolvedDefinition for "' +
-                        operation_name + '": ' + str(e))
-            log.warning(traceback.format_exc())
+            log.warning('[GraphQL][TS] TsGqlUnresolvedDefinition failed for "{}": {}'.format(operation_name, str(e)))
 
     @Event('com.castsoftware.typescript', 'typescript_endanalysis_completed')
     def on_end_html5_and_typescript(self, data):
@@ -655,7 +654,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     try:
                         create_link("callLink", codegen_obj, fn_kb)
                     except Exception as e:
-                        log.warning('[GraphQL TS Client] Failed codegen callLink for "' + fn_name + '": ' + str(e))
+                        log.warning('[GraphQL][TS] codegen callLink failed for "{}": {}'.format(fn_name, str(e)))
             self.pending_codegen_links = []
 
         # Bug 2 fix: resolve pending useLinks for cross-file GQL definitions.
@@ -678,58 +677,29 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 if direct_obj and direct_obj != 'PENDING':
                     try:
                         create_link("useLink", request_obj, direct_obj)
+                        _glog('RESULT', 'Link', _ctx(), 'pending useLink resolved → {}'.format(operation_name))
                     except Exception as link_ex:
-                        log.warning('[GraphQL TS Client] Could not resolve pending useLink for "' +
-                                    operation_name + '": ' + str(link_ex))
+                        log.warning('[GraphQL][TS] pending useLink failed for "{}": {}'.format(
+                            operation_name, str(link_ex)))
                 else:
                     still_unresolved.append((request_obj, operation_name, caller_file_kb, source_pattern))
             for (request_obj, operation_name, caller_file_kb, _) in still_unresolved:
-                self._create_missing_gql_definition(
-                    request_obj, operation_name, caller_file_kb)
+                self._create_missing_gql_definition(request_obj, operation_name, caller_file_kb)
             self.pending_links = []  # free memory — on_end is the real finish point
 
-        log.info('[GraphQL TS Client] ================================================')
-        log.info('[GraphQL TS Client] === END OF ANALYSIS SUMMARY ===')
-        log.info('[GraphQL TS Client] Total TypeScript files analyzed: ' + str(self.source_file_counter))
-        log.info('[GraphQL TS Client] ------------------------------------------------')
-        
-        # --- Successfully created objects ---
-        log.info('[GraphQL TS Client] OBJECTS CREATED SUCCESSFULLY (' + str(len(self.created_objects)) + '):')
-        if self.created_objects:
-            for obj in self.created_objects:
-                log.info('[GraphQL TS Client]   [OK] name="' + obj['name'] + '" type=' + obj['type'] + ' file=' + obj['file_path'])
-        else:
-            log.info('[GraphQL TS Client]   (none)')
-        
-        log.info('[GraphQL TS Client] ------------------------------------------------')
-        
-        # --- Objects that failed ---
-        log.info('[GraphQL TS Client] OBJECTS WITH ERRORS (' + str(len(self.failed_objects)) + '):')
-        if self.failed_objects:
-            for obj in self.failed_objects:
-                log.info('[GraphQL TS Client]   [ERR] name="' + obj['name'] + '" type=' + obj['type'] + ' file=' + obj['file_path'])
-        else:
-            log.info('[GraphQL TS Client]   (none)')
-        
-        log.info('[GraphQL TS Client] ------------------------------------------------')
-        
-        # --- Count by object type ---
+        # ── End-of-analysis summary ────────────────────────────────────────────
         type_counts = {}
         for obj in self.created_objects:
-            obj_type = obj['type']
-            type_counts[obj_type] = type_counts.get(obj_type, 0) + 1
-        
-        log.info('[GraphQL TS Client] OBJECTS CREATED PER TYPE:')
-        if type_counts:
-            for obj_type, count in sorted(type_counts.items()):
-                log.info('[GraphQL TS Client]   ' + obj_type + ': ' + str(count))
-        else:
-            log.info('[GraphQL TS Client]   (none)')
-        
-        log.info('[GraphQL TS Client] === FINISH: Cleanup ===')
-        log.info('[GraphQL TS Client] Processed ' + str(self.source_file_counter) + ' TypeScript files total')
-        log.info('[GraphQL TS Client] Created ' + str(len(self.gql_definitions)) + ' gql definitions')
-        
+            type_counts[obj['type']] = type_counts.get(obj['type'], 0) + 1
+
+        log.info('[GraphQL][TS][SUMMARY] files={} created={} failed={}'.format(
+            self.source_file_counter, len(self.created_objects), len(self.failed_objects)))
+        for obj_type, count in sorted(type_counts.items()):
+            log.info('[GraphQL][TS][SUMMARY]   {}: {}'.format(obj_type, count))
+        if self.failed_objects:
+            for obj in self.failed_objects:
+                log.warning('[GraphQL][TS][SUMMARY] FAILED: name="{}" type={}'.format(obj['name'], obj['type']))
+
         self.gql_definitions = {}
         self.scoped_var_map = {}
         self.global_var_map = {}
@@ -742,7 +712,5 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         self.source_file_counter = 0
         self.created_objects = []
         self.failed_objects = []
-        
-        log.info('[GraphQL TS Client] === FINISH: Complete ===')
 
 
