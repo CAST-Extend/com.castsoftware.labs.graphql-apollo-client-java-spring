@@ -414,42 +414,13 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     # ── Direct client: client.query/mutate({...}) ──
                     # HTML5 AST represents client.query(X) as n_parts=1, last='query'
                     # (the receiver is not in the FunctionCall parts).
-                    # _object_arg() discriminates by requiring {query:/mutation: VAR}.
                     elif last_name in _CLIENT_METHODS:
                         kb_type, display = _CLIENT_METHODS[last_name]
-                        obj_keys = (['mutation'] if last_name == 'mutate'
-                                    else ['query', 'mutation', 'subscription'])
-                        # ── diagnostic: inspect AST structure ──────────────────
-                        try:
-                            _p = _part_params(parts[0])
-                            if _p:
-                                _kids = _node_children(_p[0])
-                                _kid_names = []
-                                for _k in _kids[:6]:
-                                    try:
-                                        _kid_names.append(
-                                            _k.get_name() if hasattr(_k, 'get_name') else type(_k).__name__)
-                                    except Exception:
-                                        _kid_names.append('?')
-                                log.info('[GraphQL JS CLIENT] method=' + last_name
-                                         + ' n_params=' + str(len(_p))
-                                         + ' obj_children=' + str(_kid_names))
-                            else:
-                                log.info('[GraphQL JS CLIENT] method=' + last_name
-                                         + ' n_params=0 (no args extracted)')
-                        except Exception as _de:
-                            log.info('[GraphQL JS CLIENT] diag error: ' + str(_de))
-                        # ────────────────────────────────────────────────────────
-                        var_name = self._object_arg(parts[0], obj_keys)
+                        var_name = self._object_arg(parts[0])
                         if var_name:
-                            log.info('[GraphQL JS CLIENT] resolved var=' + var_name
-                                     + ' method=' + last_name)
                             self._create_hook(
                                 display, kb_type, var_name, display,
                                 _PAT_CLIENT, node, jsContent)
-                        else:
-                            log.info('[GraphQL JS CLIENT] _object_arg failed method='
-                                     + last_name + ' keys=' + str(obj_keys))
 
                 elif n_parts >= 2:
                     penult = _part_name(parts[-2]) if n_parts >= 2 else None
@@ -457,9 +428,7 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     # ── Angular: this.apollo.method({ query/mutation: VAR }) ──
                     if penult == 'apollo' and last_name in _ANGULAR_METHODS:
                         kb_type, display = _ANGULAR_METHODS[last_name]
-                        obj_keys = (['mutation'] if last_name == 'mutate'
-                                    else ['query', 'mutation', 'subscription'])
-                        var_name = self._object_arg(parts[-1], obj_keys)
+                        var_name = self._object_arg(parts[-1])
                         if var_name:
                             self._create_hook(
                                 display, kb_type, var_name, display,
@@ -468,9 +437,7 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     # ── Direct client: client.query({ query: VAR }) etc. ──
                     elif penult != 'apollo' and last_name in _CLIENT_METHODS:
                         kb_type, display = _CLIENT_METHODS[last_name]
-                        obj_keys = (['mutation'] if last_name == 'mutate'
-                                    else ['query', 'mutation', 'subscription'])
-                        var_name = self._object_arg(parts[-1], obj_keys)
+                        var_name = self._object_arg(parts[-1])
                         if var_name:
                             self._create_hook(
                                 display, kb_type, var_name, display,
@@ -488,13 +455,14 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             return None
         return self._ident_name(params[0])
 
-    def _object_arg(self, last_part, keys):
+    def _object_arg(self, last_part):
         """
         For apollo.query({ query: VAR, ... }): extract VAR from the object literal.
 
-        Walks children of the first parameter (an object literal), looks for a
-        child whose name matches one of `keys` (e.g. 'query' / 'mutation'), then
-        returns the name of the first identifier found inside that child.
+        HTML5 AST: {mutation: VAR} children expose the VALUE identifier name via
+        get_name(), NOT the property key name. The key ('mutation', 'query') returns
+        None from get_name(). So we take the first non-None/non-keyword child name
+        directly — it is the GQL variable identifier (e.g. BULK_DELETE_TRANSACTIONS).
         """
         params = _part_params(last_part)
         if not params:
@@ -502,17 +470,9 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         obj_node = params[0]
 
         for child in _node_children(obj_node):
-            try:
-                child_name = (child.get_name()
-                              if hasattr(child, 'get_name') else None)
-                if child_name in keys:
-                    # Walk grandchildren: the value node should be here
-                    for val in _node_children(child):
-                        n = self._ident_name(val)
-                        if n:
-                            return n
-            except Exception:
-                pass
+            n = self._ident_name(child)
+            if n:
+                return n
         return None
 
     def _ident_name(self, node):
