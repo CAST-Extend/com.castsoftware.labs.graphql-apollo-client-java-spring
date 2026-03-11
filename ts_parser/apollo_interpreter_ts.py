@@ -17,7 +17,6 @@ try:
     # Local imports
     from ts_parser.analysis_results import ApolloAnalysisResults, RawBookmark, GqlDefinition
     from ts_parser.apollo_symbols import ApolloHookObject, ApolloClientMethodObject, ApolloHookSymbol, GqlDefinitionSymbol
-    from tests.tools import get_descendants as get_descendants_tool
 except:
     from cast.analysers import log
     import traceback
