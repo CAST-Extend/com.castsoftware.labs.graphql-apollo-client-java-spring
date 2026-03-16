@@ -95,6 +95,16 @@ _FILTER_NAMES = (
 # Used to distinguish this.apollo.query/mutate/watchQuery from client.query/mutate
 _ANGULAR_IMPORT_NAMES = frozenset({'Apollo'})
 
+# npm packages that provide the `gql` template tag (named OR default export).
+# Used to detect aliased imports: import gqlTag from 'graphql-tag'
+#                                 import { gql as gqlHelper } from '@apollo/client'
+GQL_PACKAGES = frozenset([
+    'graphql-tag', '@apollo/client', '@apollo/client/core',
+    'apollo-boost', 'apollo-client', 'apollo-cache-inmemory',
+    'apollo-link', 'react-apollo', '@apollo/react-hooks',
+    '@apollo/react-hoc', '@apollo/react-components',
+])
+
 # Source pattern tags (mirrors TS _HOOK_TYPE_MAP source_pattern keys)
 _PAT_REACT   = 'react_hook'
 _PAT_ANGULAR = 'angular_method'
@@ -147,11 +157,28 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         # variable_name → operation_name; first-seen wins on collision (Bug 8 fix)
         self.var_name_to_op_name = {}
 
-        # (hook_obj, var_name, caller_kb, source_pattern) awaiting Phase 3 (Bug 2 fix)
+        # Scope-keyed GQL resolution: (file_path, var_name, id(enclosing_kb_parent)) -> KB object.
+        # Enables correct same-file resolution via scope chain walk (nearest-scope-wins).
+        self.scoped_gql_defs = {}
+
+        # (hook_obj, var_name, caller_kb, source_pattern, file_path) awaiting Phase 3
         self.pending_links = []
 
         # operation_name → JsGqlUnresolvedDefinition; deduplicated across hooks
         self.missing_gql_objects = {}
+
+        # Import-aware cross-file resolution (mirrors TS Bug 9 fix).
+        # gql_obj_by_file_var: (source_file_path, var_name) -> KB object (CustomObject)
+        self.gql_obj_by_file_var = {}
+        # imported_var_to_file: (consumer_file_path, local_name) -> (source_file_path, original_name)
+        #   import { GET_USERS } from './queries'       → (consumer, 'GET_USERS') -> (source, 'GET_USERS')
+        #   import { GET_USERS as MY_Q } from './queries' → (consumer, 'MY_Q') -> (source, 'GET_USERS')
+        self.imported_var_to_file = {}
+
+        # Set of (file_path, var_name) tuples for GQL defs that are exported.
+        # Used as a guard in import-aware cross-file resolution: non-exported defs
+        # must not be matched to hooks in other files.
+        self.exported_gql_fv_keys = set()
 
         # jsContent objects collected in start_javascript_content
         self._js_contents = []
@@ -180,6 +207,16 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                         has_filter_import = True
                     if what in _ANGULAR_IMPORT_NAMES:
                         is_angular = True
+                    # Detect aliased gql imports: import gqlTag from 'graphql-tag'
+                    # get_what_name() returns the local alias, not the export name,
+                    # so we check the import's string repr for a known GQL package.
+                    if not has_filter_import:
+                        try:
+                            imp_str = str(imp)
+                            if any(pkg in imp_str for pkg in GQL_PACKAGES):
+                                has_filter_import = True
+                        except Exception:
+                            pass
                 except Exception:
                     pass
         except Exception as e:
@@ -199,6 +236,13 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             except Exception as e:
                 log.warning('[GraphQL][JS] Phase 1 error in {}: {}'.format(str(jsc.get_file()), str(e)))
 
+        # Phase 1b — build import maps for all files (needed by Phase 2 import-aware resolution)
+        for jsc in self._js_contents:
+            try:
+                self._build_import_map_for_file(jsc)
+            except Exception as e:
+                log.warning('[GraphQL][JS] Phase 1b import map error: ' + str(e))
+
         # Phase 2 — hooks + client methods + Angular
         for jsc in self._js_contents:
             try:
@@ -212,10 +256,37 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         log.info('[GraphQL][JS][SUMMARY] files={} created={} failed={}'.format(
             len(self._js_contents), self._created, self._failed))
 
+        # Reset all state (mirrors TS on_end_html5_and_typescript reset).
+        # Guards against stale data if CAST re-uses the same extension instance.
+        self.gql_definitions = {}
+        self.var_name_to_op_name = {}
+        self.scoped_gql_defs = {}
+        self.pending_links = []
+        self.missing_gql_objects = {}
+        self.gql_obj_by_file_var = {}
+        self.imported_var_to_file = {}
+        self.exported_gql_fv_keys = set()
+        self._js_contents = []
+        self._angular_js_contents = set()
+        self._created = 0
+        self._failed = 0
+
     # ──────────────────────────────── gql alias detection ─────────────────────
 
     def _gql_aliases(self, jsContent):
-        """Return set of local names bound to the gql template tag in this file."""
+        """Return set of local names bound to the gql template tag in this file.
+
+        Handles three import forms:
+          1. import { gql } from '@apollo/client'              → adds 'gql'  (already in default)
+          2. import { gql as gqlHelper } from '@apollo/client' → adds 'gqlHelper'
+          3. import gqlTag from 'graphql-tag'                  → adds 'gqlTag'
+             (default import: get_what_name() returns local binding, not 'gql')
+
+        For form 3, we detect via str(imp) containing a known GQL package name.
+        This approach may also match other named exports from GQL packages (e.g.
+        ApolloClient), but those names are never used as template tags, so false
+        positives are harmless.
+        """
         aliases = {'gql'}
         try:
             for imp in jsContent.get_imports():
@@ -228,13 +299,78 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                             local = alias
                     except Exception:
                         pass
+                    # Form 1 & 2: named import of 'gql' (with or without alias)
                     if what == 'gql':
                         aliases.add(local)
+                        continue
+                    # Form 3: default/aliased import from a known GQL package
+                    # e.g. import gqlTag from 'graphql-tag'
+                    if local and local not in ('default', 'unknown', ''):
+                        try:
+                            imp_str = str(imp)
+                            if any(pkg in imp_str for pkg in GQL_PACKAGES):
+                                aliases.add(local)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
         except Exception:
             pass
         return aliases
+
+    # ──────────────────────────────── import map ─────────────────────────────
+
+    def _build_import_map_for_file(self, jsContent):
+        """
+        Parse import statements of jsContent and populate self.imported_var_to_file.
+
+        For each import  import { FOO } from './bar'  (or  import { FOO as F } from …)
+        we record:  (consumer_file_path, local_name) -> (source_file_path, original_name)
+
+        JS API: each named import element is a separate Import object.
+          imp.get_what_name()  → original name in the source file (e.g. 'GET_USERS')
+          imp.get_alias_name() → local alias if present (e.g. 'MY_Q'), else None
+          imp.get_js_content() → resolved jsContent of the source file, or None
+
+        External packages (@apollo/client, etc.) return None from get_js_content()
+        and are silently skipped.
+        """
+        try:
+            consumer_path = str(jsContent.get_file().get_path())
+        except Exception:
+            return
+        try:
+            for imp in jsContent.get_imports():
+                try:
+                    original_name = imp.get_what_name()
+                    if not original_name:
+                        continue
+                    local_name = original_name
+                    try:
+                        alias = imp.get_alias_name()
+                        if alias:
+                            local_name = alias
+                    except Exception:
+                        pass
+                    # Resolve source file
+                    resolved_jsc = None
+                    try:
+                        resolved_jsc = imp.get_js_content()
+                    except Exception:
+                        pass
+                    if resolved_jsc is None:
+                        continue
+                    try:
+                        source_path = str(resolved_jsc.get_file().get_path())
+                    except Exception:
+                        continue
+                    key = (consumer_path, local_name)
+                    if key not in self.imported_var_to_file:
+                        self.imported_var_to_file[key] = (source_path, original_name)
+                except Exception:
+                    pass
+        except Exception as ex:
+            log.warning('[GraphQL][JS] _build_import_map_for_file failed: ' + str(ex))
 
     # ────────────────────────────── Phase 1 — gql defs ────────────────────────
 
@@ -251,10 +387,21 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 if node.get_name() not in gql_aliases:
                     return
 
-                # Walk up to find "const VAR = gql`...`"
-                var_name = self._get_var_name(node)
+                # Walk up to find "const VAR = gql`...`" (also detects export status)
+                var_name, is_exported = self._get_var_name(node)
                 if not var_name:
                     return
+
+                # Fallback export detection: if is_in_export_statement() returned False,
+                # double-check via jsContent.get_exports() which is authoritatively
+                # populated by the CAST HTML5 parser from all export statements.
+                if not is_exported:
+                    try:
+                        exports = jsContent.get_exports()
+                        if exports and var_name in exports:
+                            is_exported = True
+                    except Exception:
+                        pass
 
                 # Extract template literal text from first part's first parameter
                 parts = node.get_function_call_parts()
@@ -272,16 +419,22 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     return
 
                 _c = _ctx()
-                _glog('DETECT', 'GqlDef', _c, 'gql`` found: var={} op={} ({})'.format(var_name, op_name, op_type))
+                _glog('DETECT', 'GqlDef', _c, 'gql`` found: var={} op={} ({}) exported={}'.format(
+                    var_name, op_name, op_type, is_exported))
                 self._create_gql_def(
-                    var_name, op_name, op_type, text, variables, fields, node, jsContent)
+                    var_name, op_name, op_type, text, variables, fields, node, jsContent,
+                    is_exported=is_exported)
             except Exception as e:
                 log.warning('[GraphQL][JS] gql visitor error: ' + str(e))
 
         _walk(jsContent, visit)
 
     def _get_var_name(self, gql_node):
-        """Walk up AST to find the variable name in 'const VAR = gql`...`'."""
+        """Walk up AST to find the variable name and export status in 'const VAR = gql`...`'.
+
+        Returns (var_name, is_exported) or (None, False) if not found.
+        is_exported is True when the Assignment node reports is_in_export_statement().
+        """
         current = gql_node
         for _ in range(12):
             try:
@@ -293,11 +446,16 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     if left and hasattr(left, 'get_name'):
                         name = left.get_name()
                         if name and name not in ('unknown', 'const', 'let', 'var'):
-                            return name
+                            is_exported = False
+                            try:
+                                is_exported = bool(parent.is_in_export_statement())
+                            except Exception:
+                                pass
+                            return name, is_exported
                 current = parent
             except Exception:
                 break
-        return None
+        return None, False
 
     def _eval_text(self, param):
         """Extract string from an AstString / template-literal parameter via evaluate()."""
@@ -357,7 +515,7 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         return op_type, op_name, variables, fields
 
     def _create_gql_def(self, var_name, op_name, op_type, raw_text,
-                        variables, fields, ast_node, jsContent):
+                        variables, fields, ast_node, jsContent, is_exported=False):
         """Create the CAST KB object for a GQL definition and register it."""
         try:
             parent_kb = jsContent.get_kb_object()
@@ -383,9 +541,38 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 obj.save_property('GraphQL_Client_Definition.variables',     variables)
             if fields:
                 obj.save_property('GraphQL_Client_Definition.fieldsSelected', fields)
+            obj.save_property('GraphQL_Client_Definition.exported', 'true' if is_exported else 'false')
 
             self._created += 1
             self.gql_definitions[op_name] = obj
+
+            # Scope-keyed map: stores KB object directly for same-file scope chain walk.
+            # First-seen wins per (file, var, scope) — prevents redeclaration collisions.
+            try:
+                file_path = str(jsContent.get_file().get_path()) if jsContent.get_file() else None
+            except Exception:
+                file_path = None
+            if file_path:
+                enclosing_sym = None
+                try:
+                    enclosing_sym = ast_node.get_first_kb_parent()
+                except Exception:
+                    pass
+                scope_id = id(enclosing_sym) if enclosing_sym is not None else None
+                scoped_key = (file_path, var_name, scope_id)
+                if scoped_key not in self.scoped_gql_defs:
+                    self.scoped_gql_defs[scoped_key] = obj
+                    _glog('SCOPE', 'GqlDef', _ctx(),
+                          'registered var={} op={} scope_id={}'.format(var_name, op_name, scope_id))
+
+            # File+var map for import-aware cross-file resolution.
+            if file_path:
+                fv_key = (file_path, var_name)
+                if fv_key not in self.gql_obj_by_file_var:
+                    self.gql_obj_by_file_var[fv_key] = obj
+                # Track exported defs for cross-file resolution guard.
+                if is_exported:
+                    self.exported_gql_fv_keys.add(fv_key)
 
             # First-seen wins: outer-scope variable takes priority on collision
             if var_name not in self.var_name_to_op_name:
@@ -574,6 +761,76 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             pass
         return None
 
+    def _resolve_gql_for_hook_js(self, var_name, ast_node, jsContent, source_pattern):
+        """
+        Resolve a hook's variable reference to the GQL definition KB object.
+
+        Strategy — scope chain walk, nearest-scope-wins (mirrors TS _resolve_gql_for_hook):
+          1. Same-file: walk from the hook's enclosing KB parent upward through parent scopes.
+             First match wins (lexical scoping: inner scope shadows outer).
+          2. Import-aware cross-file: imported_var_to_file[(file, var)] → (source, original)
+             → gql_obj_by_file_var[(source, original)] → KB object.
+             Guard: the source def must be exported (non-exported defs are file-private).
+             Returns 'PENDING' if source known but def not yet processed.
+
+        Returns CustomObject, 'PENDING', or None.
+        """
+        try:
+            file_path = str(jsContent.get_file().get_path()) if jsContent.get_file() else None
+        except Exception:
+            file_path = None
+
+        # 1. Same-file scope chain walk
+        if file_path and ast_node is not None:
+            try:
+                scope = ast_node.get_first_kb_parent()
+            except Exception:
+                scope = None
+
+            visited = set()
+            while scope is not None:
+                sid = id(scope)
+                if sid in visited:
+                    break
+                visited.add(sid)
+                key = (file_path, var_name, sid)
+                if key in self.scoped_gql_defs:
+                    method = 'same_scope' if len(visited) == 1 else 'scope_chain'
+                    obj = self.scoped_gql_defs[key]
+                    _glog('RESOLVE', 'Hook', _ctx(),
+                          '{} → {} via {}'.format(var_name, obj.get_name() if hasattr(obj, 'get_name') else '?', method))
+                    return obj
+                # Walk up: parent's first KB parent
+                try:
+                    parent = scope.parent if hasattr(scope, 'parent') else None
+                    if parent is not None and hasattr(parent, 'get_first_kb_parent'):
+                        scope = parent.get_first_kb_parent()
+                    else:
+                        scope = None
+                except Exception:
+                    scope = None
+
+        # 2. Import-aware cross-file lookup
+        if file_path:
+            import_entry = self.imported_var_to_file.get((file_path, var_name))
+            if import_entry is not None:
+                source_path, original_name = import_entry
+                obj = self.gql_obj_by_file_var.get((source_path, original_name))
+                if obj is not None:
+                    fv_key = (source_path, original_name)
+                    if fv_key not in self.exported_gql_fv_keys:
+                        _glog('RESOLVE', 'Hook', _ctx(),
+                              '{} → BLOCKED (not exported, file={})'.format(var_name, source_path))
+                        return None
+                    _glog('RESOLVE', 'Hook', _ctx(),
+                          '{} → {} via import from {} (original={})'.format(
+                              var_name, obj.get_name() if hasattr(obj, 'get_name') else '?',
+                              source_path, original_name))
+                    return obj
+                return 'PENDING'
+
+        return None
+
     def _create_hook(self, display_name, hook_type, var_name, hook_label,
                      source_pattern, ast_node, jsContent):
         """Create the CAST KB object for a hook call and attempt useLink resolution."""
@@ -615,15 +872,20 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
             self._created += 1
             _glog('RESULT', 'Object', _c, '{} "{}" created'.format(hook_type, hook_name))
 
-            # Resolve variable → operation_name → gql_definitions
-            lookup_key = self._resolve_lookup_key(var_name, source_pattern)
+            # Resolve variable → GQL definition via scoped resolution
+            resolved_obj = self._resolve_gql_for_hook_js(var_name, ast_node, jsContent, source_pattern)
 
-            if lookup_key in self.gql_definitions:
-                create_link('useLink', obj, self.gql_definitions[lookup_key])
-                _glog('RESULT', 'Link', _c, 'useLink {} → {}'.format(hook_name, lookup_key))
+            if resolved_obj is not None and resolved_obj != 'PENDING':
+                create_link('useLink', obj, resolved_obj)
+                _glog('RESULT', 'Link', _c, 'useLink {} → {}'.format(hook_name, resolved_obj.get_name() if hasattr(resolved_obj, 'get_name') else var_name))
             else:
+                try:
+                    fp = str(jsContent.get_file().get_path())
+                except Exception:
+                    fp = None
                 self.pending_links.append(
-                    (obj, var_name, jsContent.get_kb_object(), source_pattern))
+                    (obj, var_name, jsContent.get_kb_object(), source_pattern, fp))
+                _glog('RESULT', 'Hook', _c, '{} → pending (cross-file)'.format(hook_name))
 
         except Exception as e:
             log.warning('[GraphQL][JS] Failed to create hook "{}:{}": {}'.format(display_name, var_name, str(e)))
@@ -660,26 +922,57 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
     # ────────────────────────────── Phase 3 — pending links ───────────────────
 
     def _resolve_pending_links(self):
-        """Retry useLink creation for hooks whose GQL def was not yet known in Phase 2."""
+        """Retry useLink creation for hooks whose GQL def was not yet known in Phase 2.
+
+        At Phase 3 time all files are processed, so gql_obj_by_file_var is fully populated.
+        Import-aware lookup with export guard: non-exported defs are blocked.
+        Truly unresolvable hooks become JsGqlUnresolvedDefinition objects.
+        """
         if not self.pending_links:
             return
 
         still = []
         for entry in self.pending_links:
-            hook_obj, var_name, caller_kb, source_pattern = entry
-            lookup_key = self._resolve_lookup_key(var_name, source_pattern)
+            # Backward-compat: old tuples have 4 elements, new ones have 5
+            if len(entry) == 5:
+                hook_obj, var_name, caller_kb, source_pattern, fp = entry
+            else:
+                hook_obj, var_name, caller_kb, source_pattern = entry
+                fp = None
 
-            if lookup_key in self.gql_definitions:
+            resolved_obj = None
+
+            # Import-aware lookup with export guard
+            if fp:
+                import_entry = self.imported_var_to_file.get((fp, var_name))
+                if import_entry is not None:
+                    source_path, original_name = import_entry
+                    candidate = self.gql_obj_by_file_var.get((source_path, original_name))
+                    if candidate is not None:
+                        fv_key = (source_path, original_name)
+                        if fv_key in self.exported_gql_fv_keys:
+                            resolved_obj = candidate
+                        else:
+                            _glog('RESOLVE', 'Hook', _ctx(),
+                                  '{} → BLOCKED in pending (not exported, file={})'.format(
+                                      var_name, source_path))
+
+            if resolved_obj is not None:
                 try:
-                    create_link('useLink', hook_obj, self.gql_definitions[lookup_key])
-                    _glog('RESULT', 'Link', _ctx(), 'pending useLink resolved → {}'.format(lookup_key))
+                    create_link('useLink', hook_obj, resolved_obj)
+                    _glog('RESULT', 'Link', _ctx(), 'pending useLink resolved → {}'.format(
+                        resolved_obj.get_name() if hasattr(resolved_obj, 'get_name') else var_name))
                 except Exception as e:
-                    log.warning('[GraphQL][JS] pending useLink failed for "{}": {}'.format(lookup_key, str(e)))
+                    log.warning('[GraphQL][JS] pending useLink failed for "{}": {}'.format(var_name, str(e)))
             else:
                 still.append(entry)
 
         # Create JsGqlUnresolvedDefinition objects for hooks whose GQL def was never found
-        for hook_obj, var_name, caller_kb, source_pattern in still:
+        for entry in still:
+            var_name = entry[1]
+            caller_kb = entry[2]
+            source_pattern = entry[3]
+            hook_obj = entry[0]
             lookup_key = self._resolve_lookup_key(var_name, source_pattern)
             if lookup_key not in self.missing_gql_objects:
                 try:

@@ -42,6 +42,11 @@
 			<attribute name="INF_TYPE" intValue="2135103"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
+		<property name="exported" type="string" rid="109">
+			<description>Whether the GQL const is exported: "true" or "false"</description>
+			<attribute name="INF_TYPE" intValue="2135109"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
 	</category>
 	<!-- Category for Apollo hook requests (LEVEL 2: hook usage) -->
 	<category name="GraphQL_Hook_Request" rid="30">

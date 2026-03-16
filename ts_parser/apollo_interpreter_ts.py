@@ -74,6 +74,98 @@ CLIENT_METHOD_TO_HOOK = {
 ALL_RECEIVER_METHODS = set(ANGULAR_METHOD_TO_HOOK) | set(CLIENT_METHOD_TO_HOOK)
 # = {'query', 'mutate', 'watchQuery', 'subscribe'}
 
+# ─── gql tag alias support ────────────────────────────────────────────────────
+# Packages that export a `gql` tagged-template function under any local name.
+GQL_PACKAGES = frozenset([
+    'graphql-tag', '@apollo/client', '@apollo/client/core',
+    'apollo-boost', 'apollo-client', 'apollo-cache-inmemory',
+    'apollo-link', 'react-apollo', '@apollo/react-hooks',
+    '@apollo/react-hoc', '@apollo/react-components',
+])
+
+
+def _build_gql_tag_names(module):
+    """
+    Scan the import statements of *module* and return the set of local names
+    bound to the gql tag function in this file.
+
+    Always includes 'gql' (canonical).  Adds any aliases such as:
+      import { gql as gqlTag } from '@apollo/client'  → adds 'gqlTag'
+      import gqlTag from 'graphql-tag'                → adds 'gqlTag'
+    """
+    gql_names = {'gql'}
+    try:
+        for imp in module.get_imports():
+            imp_str = str(imp)
+            # Check if this import is from a known gql-providing package.
+            from_gql_pkg = any(
+                ("'" + pkg + "'") in imp_str or ('"' + pkg + '"') in imp_str
+                for pkg in GQL_PACKAGES
+            )
+            if not from_gql_pkg:
+                continue
+
+            # Named imports: { gql } or { gql as gqlTag }
+            try:
+                elements = imp.get_imported_elements()
+                if elements:
+                    for elem in elements:
+                        try:
+                            original = elem.get_element_name()
+                            if original == 'gql':
+                                alias = elem.get_alias_name() or original
+                                gql_names.add(alias)
+                        except Exception:
+                            pass
+                    continue  # Named import handled; skip default-import detection
+            except Exception:
+                pass
+
+            # Default import: import gqlTag from 'graphql-tag'
+            # The first Identifier sub-node of the Import node IS the default-import name.
+            try:
+                for sub in imp.get_sub_nodes():
+                    if type(sub).__name__ == 'Identifier':
+                        name = sub.get_name() if hasattr(sub, 'get_name') else None
+                        if name:
+                            gql_names.add(name)
+                        break
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return gql_names
+
+
+def _is_var_exported(var_decl):
+    """
+    Return True if this VariableDeclaration is preceded by a bare 'export' token
+    among its parent's raw children.
+
+    For 'export const X = gql`...`', the bundled parser emits two siblings at
+    Root level: Token('export') then VariableDeclaration[const X = ...].
+    The VariableDeclaration itself has no is_exported / get_modifiers attribute.
+    """
+    parent = getattr(var_decl, 'parent', None)
+    if parent is None:
+        return False
+    raw_children = getattr(parent, 'children', None)
+    if raw_children is None:
+        return False
+    try:
+        idx = raw_children.index(var_decl)
+    except ValueError:
+        return False
+    # Scan backwards, skipping whitespace tokens (up to 4 positions)
+    for k in range(idx - 1, max(idx - 4, -1), -1):
+        prev = raw_children[k]
+        prev_text = getattr(prev, 'text', '')
+        if prev_text == 'export':
+            return True
+        if prev_text and prev_text.strip():
+            break  # Hit a non-whitespace non-export token — not exported
+    return False
+
 
 def analyse_ts_fragment(ts_fragment, apollo_analysis_results):
     """
@@ -264,6 +356,10 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         else:
             self.ts_evaluate = None
 
+        # Set of local names bound to the gql tag in this file (alias-aware).
+        # Always contains 'gql'; extended by _build_gql_tag_names with any import aliases.
+        self.gql_tag_names = _build_gql_tag_names(module)
+
     def on_end(self):
         """
         Called after walking the AST. Perform final processing.
@@ -322,6 +418,19 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
 
         return best_match
 
+    def _has_gql_tag_token(self, text):
+        """
+        Return True if *text* (a node repr string) contains a Token.Generic token
+        whose value is one of the known gql tag names in this file.
+        Handles both single-quoted and double-quoted token repr formats.
+        """
+        for name in self.gql_tag_names:
+            if "Token.Generic,'{}'".format(name) in text:
+                return True
+            if 'Token.Generic,"{}"'.format(name) in text:
+                return True
+        return False
+
     def extract_all_gql_definitions(self):
         """
         Extract all GraphQL definitions (const GET_USERS = gql`...`)
@@ -360,17 +469,17 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                         string_template = None
 
                         for sub_node in expr_stmt.get_sub_nodes():
-                            if hasattr(sub_node, 'get_name') and sub_node.get_name() == 'gql':
+                            if hasattr(sub_node, 'get_name') and sub_node.get_name() in self.gql_tag_names:
                                 has_gql = True
                             elif is_ts_node_type(sub_node, 'StringTemplate'):
                                 string_template = sub_node
 
                         # Fallback for the `as` cast pattern: `const X = gql\`...\` as TypedDocumentNode<...>`
-                        # In this case 'gql' is a bare Token (not a Node) inside the ExpressionStatement,
-                        # so get_sub_nodes() misses it.  Detect it via the string representation.
+                        # In this case the gql identifier is a bare Token (not a Node) inside the
+                        # ExpressionStatement, so get_sub_nodes() misses it.  Detect via repr.
                         if string_template is not None and not has_gql:
                             expr_str = str(expr_stmt)
-                            if "Token.Generic,'gql'" in expr_str or 'Token.Generic,"gql"' in expr_str:
+                            if self._has_gql_tag_token(expr_str):
                                 has_gql = True
 
                         # Deep fallback: for assignment-type ExpressionStatements like
@@ -384,7 +493,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                                 string_template = nested[0]
                         if string_template is not None and not has_gql:
                             expr_str = str(expr_stmt)
-                            if "Token.Generic,'gql'" in expr_str or 'Token.Generic,"gql"' in expr_str:
+                            if self._has_gql_tag_token(expr_str):
                                 has_gql = True
 
                         if has_gql and string_template:
@@ -434,6 +543,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                                     ast_node=ast_node,
                                     raw_bookmark=raw_bookmark
                                 )
+                                gql_def.exported = _is_var_exported(var_decl)
 
                                 # Add to analysis results
                                 self.apollo_analysis_results.add_gql_definition(gql_def)
@@ -483,25 +593,28 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                         has_gql_in_decl = False
                         for _expr in expr_statements:
                             for sub_node in _expr.get_sub_nodes():
-                                if hasattr(sub_node, 'get_name') and sub_node.get_name() == 'gql':
+                                if hasattr(sub_node, 'get_name') and sub_node.get_name() in self.gql_tag_names:
                                     has_gql_in_decl = True
                                     break
                             if not has_gql_in_decl:
                                 _expr_str = str(_expr)
-                                if "Token.Generic,'gql'" in _expr_str or 'Token.Generic,"gql"' in _expr_str:
+                                if self._has_gql_tag_token(_expr_str):
                                     has_gql_in_decl = True
                             if has_gql_in_decl:
                                 break
                         # Broader check: scan the entire var_decl string repr if expr-level checks missed it
                         if not has_gql_in_decl:
                             var_decl_str = str(var_decl)
-                            if "Token.Generic,'gql'" in var_decl_str or 'Token.Generic,"gql"' in var_decl_str:
+                            if self._has_gql_tag_token(var_decl_str):
                                 has_gql_in_decl = True
                         if has_gql_in_decl:
                             _c = _ctx()
                             _line = var_decl.get_begin_line() if hasattr(var_decl, 'get_begin_line') else '?'
                             _glog('DETECT', 'GqlDef', _c, 'as-cast gql found: var={} line={}'.format(var_name, _line))
-                            self._register_gql_from_template(var_name, var_decl, string_templates_in_decl[0], _c)
+                            self._register_gql_from_template(
+                                var_name, var_decl, string_templates_in_decl[0], _c,
+                                exported=_is_var_exported(var_decl)
+                            )
                     
         except Exception as e:
             log.warning('[GraphQL][TS] extract_all_gql_definitions error: {}'.format(str(e)))
@@ -596,7 +709,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
 
         return result
 
-    def _register_gql_from_template(self, var_name, var_decl, string_template, ctx=None):
+    def _register_gql_from_template(self, var_name, var_decl, string_template, ctx=None, exported=False):
         """
         Parse a StringTemplate and register the resulting GQL definition.
         Shared by the normal path and the Bug 3 as-cast fallback path.
@@ -617,6 +730,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             ast_node=var_decl,
             raw_bookmark=raw_bookmark
         )
+        gql_def.exported = exported
         self.apollo_analysis_results.add_gql_definition(gql_def)
 
         parent_symbol = self.find_parent_symbol_for_ast_node(var_decl)
@@ -838,7 +952,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             # Check if it's an identifier (outline case)
             if hasattr(first_child, 'get_name'):
                 operation_name = first_child.get_name()
-                if operation_name and operation_name != 'gql':
+                if operation_name and operation_name not in self.gql_tag_names:
                     return operation_name
 
             return None
@@ -878,16 +992,16 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                 # Look for 'gql' token and StringTemplate in the ExpressionStatement
                 # Use get_children() instead of get_sub_nodes() to get both tokens and nodes
                 for child in first_child.get_children():
-                    # Check for 'gql' identifier node
+                    # Check for gql identifier node (alias-aware)
                     if is_ts_node_type(child, 'Identifier'):
                         node_name = child.get_name() if hasattr(child, 'get_name') else None
-                        if node_name == 'gql':
+                        if node_name in self.gql_tag_names:
                             has_gql = True
 
-                    # Check for 'gql' token (direct Token object)
+                    # Check for gql token (direct Token object, alias-aware)
                     elif hasattr(child, '__class__') and 'Token' in child.__class__.__name__:
                         token_str = str(child)
-                        if "'gql'" in token_str or '"gql"' in token_str or 'Token.Generic,\'gql\'' in token_str:
+                        if self._has_gql_tag_token(token_str):
                             has_gql = True
 
                     # Check for StringTemplate node

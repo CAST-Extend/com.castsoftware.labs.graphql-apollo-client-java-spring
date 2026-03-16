@@ -85,12 +85,11 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Dedup cache for TsGqlUnresolvedDefinition objects (keyed by operation_name)
         self.missing_gql_objects = {}
 
-        # Scope-keyed variable resolution: (file_path, var_name, id(parent_symbol)) -> op_name.
-        # Enables correct resolution when the same variable name (e.g. "QUERY") is declared
-        # in multiple scopes of the same file (e.g. 3 codegen wrapper functions).
-        self.scoped_var_map = {}
-        # Global fallback for cross-file resolution (first-seen wins).
-        self.global_var_map = {}
+        # Scope-keyed GQL resolution: (file_path, var_name, id(parent_symbol)) -> KB object.
+        # Enables correct same-file resolution via scope chain walk (nearest-scope-wins).
+        # When a hook calls useQuery(Q), we walk from the hook's scope upward until we find
+        # a GQL definition for "Q" — this correctly handles shadowing in nested scopes.
+        self.scoped_gql_defs = {}
 
         # Import-aware cross-file resolution (Bug 9 fix).
         # gql_defs_by_file_var: (source_file_path, var_name) -> op_name
@@ -100,9 +99,12 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         #   Direct KB object lookup; bypasses gql_definitions[op_name] last-writer-wins
         #   collision when the same operation name is defined in multiple source files.
         self.gql_obj_by_file_var = {}
-        # imported_var_to_file: (consumer_file_path, local_name) -> source_file_path
-        #   Populated from import statements: import { QUERY } from './queries' maps
-        #   (consumer.tsx, 'QUERY') -> absolute path of queries.ts
+        # imported_var_to_file: (consumer_file_path, local_name) -> (source_file_path, original_name)
+        #   Populated from import statements:
+        #     import { QUERY } from './queries'       → (consumer, 'QUERY') -> (source, 'QUERY')
+        #     import { QUERY as Q } from './queries'  → (consumer, 'Q')     -> (source, 'QUERY')
+        #   Storing original_name fixes alias resolution: gql_obj_by_file_var is keyed by
+        #   the variable name in the source file, not the consumer's local alias.
         self.imported_var_to_file = {}
 
         # Map function_name -> KB object, populated from every processed TS file.
@@ -112,6 +114,11 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Codegen hooks whose TS wrapper function was not yet seen when the hook was created.
         # Each entry: (codegen_obj, function_name)
         self.pending_codegen_links = []
+
+        # Set of (file_path, var_name) tuples for GQL defs that are exported.
+        # Used as a guard in import-aware cross-file resolution: non-exported defs
+        # must not be matched to hooks in other files.
+        self.exported_gql_fv_keys = set()
 
         # Track created/failed objects for end-of-analysis summary
         # Each entry: {'name': str, 'type': str, 'file_path': str}
@@ -216,119 +223,94 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     source_path = str(imported_sf.get_path())
                     for elem in elements:
                         # local_name is the alias if present, else the original name.
-                        # e.g. import { GET_USERS as MY_QUERY } → local_name = 'MY_QUERY'
+                        # original_name is always the element name in the source file.
+                        # e.g. import { GET_USERS as MY_QUERY } → local='MY_QUERY', original='GET_USERS'
+                        # e.g. import { GET_USERS }             → local='GET_USERS', original='GET_USERS'
                         local_name = None
+                        original_name = None
                         try:
-                            local_name = elem.get_alias_name() or elem.get_element_name()
+                            original_name = elem.get_element_name()
+                            local_name = elem.get_alias_name() or original_name
                         except Exception as e:
                             log.warning('[GraphQL][TS] import element name lookup failed: ' + str(e))
-                        if local_name:
+                        if local_name and original_name:
                             key = (consumer_path, local_name)
                             if key not in self.imported_var_to_file:
-                                self.imported_var_to_file[key] = source_path
+                                self.imported_var_to_file[key] = (source_path, original_name)
                 except Exception:
                     pass
         except Exception as ex:
             log.warning('[GraphQL][TS] _build_import_map_for_file failed: ' + str(ex))
 
-    def _resolve_variable_in_scope(self, variable_name, hook_parent_symbol, file_path):
+    def _resolve_gql_for_hook(self, variable_name, hook_ps, fp):
         """
-        Resolve a variable name to a GQL operation name.
+        Resolve a hook's variable reference to the GQL definition KB object.
 
-        Resolution order (Bug 9 fix):
-          1. Scope-keyed intra-file lookup (same file, innermost scope first).
-          2. Import-aware cross-file lookup: if the consumer file imports `variable_name`
-             from a specific source file, resolve using (source_file, variable_name) key
-             instead of the global first-seen map.  This prevents wrong matches when the
-             same variable name (e.g. "QUERY") is defined in multiple files.
-          3. Global first-seen fallback (kept for backward compat / unresolvable imports).
-        """
-        # 1. Scoped intra-file lookup
-        if file_path and hook_parent_symbol is not None:
-            visited = set()
-            scope = hook_parent_symbol
-            while scope is not None:
-                sid = id(scope)
-                if sid in visited:
-                    break
-                visited.add(sid)
-                key = (file_path, variable_name, sid)
-                if key in self.scoped_var_map:
-                    return self.scoped_var_map[key]
-                scope = getattr(scope, 'get_parent_symbol', lambda: None)()
-
-        # 2. Import-aware cross-file lookup
-        if file_path:
-            source_path = self.imported_var_to_file.get((file_path, variable_name))
-            if source_path is not None:
-                op_name = self.gql_defs_by_file_var.get((source_path, variable_name))
-                if op_name is not None:
-                    return op_name
-                # Source file known but GQL def not yet processed (ordering) — return a
-                # sentinel that will still miss in gql_definitions and land in pending_links,
-                # where it will be re-resolved after all files are done.
-
-        # 3. Global first-seen fallback
-        return self.global_var_map.get(variable_name, variable_name)
-
-    def _direct_resolve_gql_obj(self, variable_name, hook_ps, fp):
-        """
-        Resolve variable_name directly to a KB object (CustomObject), bypassing the
-        op_name indirection that causes wrong useLinks when the same operation name
-        (e.g. 'SearchTransactions') is defined in multiple source files.
-
-        Resolution priority:
-          1. Scoped intra-file: scope chain confirms var defined in this file
-             → gql_obj_by_file_var[(fp, variable_name)]
-          1b. Direct intra-file fallback (when hook_ps is None or scope walk missed)
-             → gql_obj_by_file_var.get((fp, variable_name))
-          2. Import-aware: consumer imports var from a specific source file
-             → gql_obj_by_file_var[(source_path, variable_name)]
-             Returns sentinel 'PENDING' when source known but def not yet processed.
-          3. Global fallback (op_name based, last-writer-wins risk retained for
-             anonymous/unresolvable cases where no better path exists).
+        Strategy — scope chain walk, nearest-scope-wins:
+          1. Same-file: walk from the hook's scope upward through parent scopes.
+             First match wins (lexical scoping: inner scope shadows outer).
+          2. Import-aware cross-file: the consumer file imports `variable_name`
+             from a known source file → look up that source file's GQL def.
+             Guard: the source def must be exported (non-exported defs are
+             file-private and must not be linked cross-file).
+             Returns 'PENDING' if source known but def not yet processed.
 
         Returns:
           - CustomObject: the resolved KB object
-          - 'PENDING': import source is known but the def hasn't been processed yet
-          - None: unresolvable at this point (should land in pending_links)
+          - 'PENDING': import source known but def not yet processed
+          - None: unresolvable
         """
-        # 1. Scoped intra-file lookup
+        # 1. Same-file scope chain walk
         if fp and hook_ps is not None:
             visited = set()
             scope = hook_ps
+            _diag_steps = []
             while scope is not None:
                 sid = id(scope)
                 if sid in visited:
+                    _diag_steps.append('CYCLE at id={}'.format(sid))
                     break
                 visited.add(sid)
                 key = (fp, variable_name, sid)
-                if key in self.scoped_var_map:
-                    obj = self.gql_obj_by_file_var.get((fp, variable_name))
-                    if obj is not None:
-                        return obj
-                    break  # confirmed in scope but no obj entry — fall through
+                _diag_steps.append('scope_type={} scope_name={} scope_id={} key_match={}'.format(
+                    type(scope).__name__,
+                    scope.get_name() if hasattr(scope, 'get_name') else '?',
+                    sid,
+                    key in self.scoped_gql_defs))
+                if key in self.scoped_gql_defs:
+                    method = 'same_scope' if scope is hook_ps else 'scope_chain'
+                    obj = self.scoped_gql_defs[key]
+                    _glog('RESOLVE', 'Hook', _ctx(),
+                          '{} → {} via {}'.format(variable_name, obj.get_name() if hasattr(obj, 'get_name') else '?', method))
+                    return obj
                 scope = getattr(scope, 'get_parent_symbol', lambda: None)()
-
-        # 1b. Direct intra-file (no scope confirmation; handles hook_ps=None edge case)
-        if fp:
-            obj = self.gql_obj_by_file_var.get((fp, variable_name))
-            if obj is not None:
-                return obj
+            _glog('DIAG', 'ScopeWalk', _ctx(),
+                  'MISS var={} hook_ps_type={} hook_ps_id={} steps=[{}]'.format(
+                      variable_name,
+                      type(hook_ps).__name__ if hook_ps else 'None',
+                      id(hook_ps) if hook_ps else 'None',
+                      ' | '.join(_diag_steps)))
 
         # 2. Import-aware cross-file lookup
         if fp:
-            source_path = self.imported_var_to_file.get((fp, variable_name))
-            if source_path is not None:
-                obj = self.gql_obj_by_file_var.get((source_path, variable_name))
+            import_entry = self.imported_var_to_file.get((fp, variable_name))
+            if import_entry is not None:
+                source_path, original_name = import_entry
+                obj = self.gql_obj_by_file_var.get((source_path, original_name))
                 if obj is not None:
+                    fv_key = (source_path, original_name)
+                    if fv_key not in self.exported_gql_fv_keys:
+                        _glog('RESOLVE', 'Hook', _ctx(),
+                              '{} → BLOCKED (not exported, file={})'.format(variable_name, source_path))
+                        return None
+                    _glog('RESOLVE', 'Hook', _ctx(),
+                          '{} → {} via import from {} (original={})'.format(
+                              variable_name, obj.get_name() if hasattr(obj, 'get_name') else '?',
+                              source_path, original_name))
                     return obj
                 return 'PENDING'
 
-        # 3. Global fallback (op_name-based — collision risk when same op_name in multiple files)
-        op_name = self.global_var_map.get(variable_name, variable_name)
-        obj = self.gql_definitions.get(op_name)
-        return obj  # None if not found
+        return None
 
     def _create_gql_definition (self, gql_def, source_file):
         """
@@ -390,6 +372,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             client_obj.save_property('GraphQL_Client_Definition.rawQueryText', gql_def.raw_query_text or '')
             client_obj.save_property('GraphQL_Client_Definition.variables', gql_def.variables or '')
             client_obj.save_property('GraphQL_Client_Definition.fieldsSelected', gql_def.fields_selected or '')
+            client_obj.save_property('GraphQL_Client_Definition.exported', 'true' if gql_def.exported else 'false')
             
             # Step 7: Create bookmark for source navigation
             try:
@@ -400,29 +383,33 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             except Exception:
                 pass
             
-            # Step 8: Store in cache for LEVEL 2 linking (keyed by operation name).
-            # Also record variable_name -> kb_name mapping so hook lookup can resolve
-            # useQuery(VAR_NAME) -> self.gql_definitions[operation_name].
-            # First-seen wins on variable name collision (outer scope takes priority).
+            # Step 8: Store in caches for LEVEL 2 linking.
             self.gql_definitions[kb_name] = client_obj
-            # Scope-keyed map: exact scope match for intra-file resolution
+
+            # Scope-keyed map: stores KB object directly for same-file scope chain walk.
+            # First-seen wins per (file, var, scope) — prevents redeclaration collisions.
             ps = getattr(gql_def, 'parent_symbol', None)
             scoped_key = (file_path, variable_name, id(ps) if ps is not None else None)
-            if scoped_key not in self.scoped_var_map:
-                self.scoped_var_map[scoped_key] = kb_name
-            # File+var map for import-aware cross-file resolution (Bug 9).
-            # Key: (source_file_path, exported_var_name) → allows a consumer that imports
-            # { QUERY } from this file to resolve to exactly this operation.
+            _glog('DIAG', 'ScopedKey', _c,
+                  'STORE var={} ps_type={} ps_name={} ps_id={} key={}'.format(
+                      variable_name,
+                      type(ps).__name__ if ps else 'None',
+                      ps.get_name() if ps and hasattr(ps, 'get_name') else '?',
+                      id(ps) if ps else 'None',
+                      scoped_key))
+            if scoped_key not in self.scoped_gql_defs:
+                self.scoped_gql_defs[scoped_key] = client_obj
+
+            # File+var map for import-aware cross-file resolution.
             fv_key = (file_path, variable_name)
             if fv_key not in self.gql_defs_by_file_var:
                 self.gql_defs_by_file_var[fv_key] = kb_name
-            # Direct KB object cache — avoids op_name collision when same operation name
-            # is defined in multiple source files (extends Bug 9 fix: gql_obj_by_file_var).
             if fv_key not in self.gql_obj_by_file_var:
                 self.gql_obj_by_file_var[fv_key] = client_obj
-            # Global fallback for cross-file (first-seen wins)
-            if variable_name not in self.global_var_map:
-                self.global_var_map[variable_name] = kb_name
+
+            # Track exported defs for cross-file resolution guard.
+            if gql_def.exported:
+                self.exported_gql_fv_keys.add(fv_key)
             self.created_objects.append({'name': kb_name, 'type': object_type, 'file_path': file_path})
 
             _c = _ctx()
@@ -584,13 +571,15 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             if source_pattern != 'codegen_hook':
                 hook_ps = getattr(hook, 'parent_symbol', None)
                 fp = str(source_file.get_path())
-                direct_obj = self._direct_resolve_gql_obj(operation_name, hook_ps, fp)
-                if direct_obj == 'PENDING' or direct_obj is None:
+                resolved_obj = self._resolve_gql_for_hook(operation_name, hook_ps, fp)
+                if resolved_obj == 'PENDING' or resolved_obj is None:
                     self.pending_links.append(
                         (request_obj, operation_name, source_file.get_kb_object(), source_pattern, hook_ps, fp))
+                    if resolved_obj is None:
+                        _glog('RESOLVE', 'Hook', _c, '{} → UNRESOLVED (pending)'.format(operation_name))
                 else:
                     try:
-                        create_link("useLink", request_obj, direct_obj)
+                        create_link("useLink", request_obj, resolved_obj)
                         _glog('RESULT', 'Link', _c, 'useLink {} → {}'.format(unique_request_name, operation_name))
                     except Exception as link_ex:
                         log.warning('[GraphQL][TS] useLink failed for "{}": {}'.format(unique_request_name, str(link_ex)))
@@ -672,11 +661,11 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     request_obj, operation_name, caller_file_kb = entry
                     source_pattern, hook_ps, fp = 'react_hook', None, None
 
-                direct_obj = self._direct_resolve_gql_obj(operation_name, hook_ps, fp)
+                resolved_obj = self._resolve_gql_for_hook(operation_name, hook_ps, fp)
                 # At on_end time all files are processed, so 'PENDING' is treated as unresolved.
-                if direct_obj and direct_obj != 'PENDING':
+                if resolved_obj and resolved_obj != 'PENDING':
                     try:
-                        create_link("useLink", request_obj, direct_obj)
+                        create_link("useLink", request_obj, resolved_obj)
                         _glog('RESULT', 'Link', _ctx(), 'pending useLink resolved → {}'.format(operation_name))
                     except Exception as link_ex:
                         log.warning('[GraphQL][TS] pending useLink failed for "{}": {}'.format(
@@ -701,10 +690,10 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 log.warning('[GraphQL][TS][SUMMARY] FAILED: name="{}" type={}'.format(obj['name'], obj['type']))
 
         self.gql_definitions = {}
-        self.scoped_var_map = {}
-        self.global_var_map = {}
+        self.scoped_gql_defs = {}
         self.gql_defs_by_file_var = {}
         self.gql_obj_by_file_var = {}
+        self.exported_gql_fv_keys = set()
         self.imported_var_to_file = {}
         self.missing_gql_objects = {}
         self.ts_functions = {}

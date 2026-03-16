@@ -2278,5 +2278,291 @@ export class UserService {
                          "Angular watchQuery maps to hook_name='useLazyQuery'")
 
 
+    def test_export_ast_diagnostic(self):
+        """
+        DIAGNOSTIC TEST — Q1: Comment le parser TS expose-t-il le mot-clé 'export' sur un VariableDeclaration?
+        Ce test NE fait PAS d'assertions — il imprime l'arbre AST pour inspection manuelle.
+        Lancez avec: python -m pytest tests/test_ts.py::TestLocalApolloClientPatterns::test_export_ast_diagnostic -v -s
+        """
+        code = """\
+import { gql } from '@apollo/client';
+
+// Cas 1 : export const (named export)
+export const GET_USERS = gql`query GetUsers { users { id name } }`;
+
+// Cas 2 : const sans export
+const GET_POSTS = gql`query GetPosts { posts { id title } }`;
+
+// Cas 3 : export default
+export default gql`query GetComments { comments { id body } }`;
+
+// Cas 4 : export const avec annotation TypedDocumentNode
+export const GET_ORDERS: any = gql`query GetOrders { orders { id } }`;
+"""
+        module = SourceFile('C:\\Cast\\GraphQL\\export_diagnostic.ts', text=code)
+        ts_progr = __import__('typescript_dependencies.ProgramSymbol', fromlist=['Program']).Program()
+        ts_progr.add_file(source_file=module)
+        module.light_parse()
+        module.set_line_count()
+        module.fully_parse()
+        ts_progr.resolve_globals()
+
+        ast = module.get_ast()
+
+        print("\n" + "=" * 80)
+        print("DIAGNOSTIC — export const AST structure")
+        print("=" * 80)
+        print("\n--- Full AST tree ---")
+        ast.print_tree()
+
+        print("\n--- Top-level children of AST root ---")
+        for i, child in enumerate(ast.get_sub_nodes()):
+            child_type = type(child).__name__
+            child_repr = repr(child)[:120]
+            print("  [{}] type={}  repr={}".format(i, child_type, child_repr))
+            # Descend one level
+            for j, grandchild in enumerate(child.get_sub_nodes()):
+                gc_type = type(grandchild).__name__
+                gc_repr = repr(grandchild)[:100]
+                print("       [{}.{}] type={}  repr={}".format(i, j, gc_type, gc_repr))
+                # Check for 'export' token in raw children
+                if hasattr(grandchild, 'children'):
+                    for k, raw_child in enumerate(grandchild.children):
+                        rc_type = type(raw_child).__name__
+                        rc_repr = repr(raw_child)[:80]
+                        print("              [{}.{}.{}] type={}  repr={}".format(i, j, k, rc_type, rc_repr))
+
+        print("\n--- Checking attributes on VariableDeclaration nodes ---")
+        from typescript_dependencies.typescript_walker import get_descendants
+        # Try to find VariableDeclaration nodes
+        for i, child in enumerate(ast.get_sub_nodes()):
+            child_type = str(type(child))
+            if 'VariableDeclaration' in child_type or 'Export' in child_type:
+                print("\n  Node [{}]: type={}".format(i, type(child).__name__))
+                print("    is_exported  = {}".format(getattr(child, 'is_exported', 'ATTR_MISSING')))
+                print("    get_modifiers = {}".format(getattr(child, 'get_modifiers', 'ATTR_MISSING')))
+                if callable(getattr(child, 'get_modifiers', None)):
+                    print("    get_modifiers() = {}".format(child.get_modifiers()))
+                print("    parent type  = {}".format(type(getattr(child, 'parent', None)).__name__))
+                if hasattr(child, 'children'):
+                    first = repr(child.children[0])[:80] if child.children else 'EMPTY'
+                    print("    children[0]  = {}".format(first))
+                # One more level down
+                for j, sub in enumerate(child.get_sub_nodes()):
+                    sub_type = str(type(sub))
+                    if 'VariableDeclaration' in sub_type or 'Export' in sub_type:
+                        print("    Sub [{}]: type={}".format(j, type(sub).__name__))
+                        print("      is_exported  = {}".format(getattr(sub, 'is_exported', 'ATTR_MISSING')))
+                        if hasattr(sub, 'children'):
+                            first_sub = repr(sub.children[0])[:80] if sub.children else 'EMPTY'
+                            print("      children[0]  = {}".format(first_sub))
+
+        print("\n" + "=" * 80)
+        print("FIN DIAGNOSTIC")
+        print("=" * 80)
+        # No assertion — pure diagnostic
+        self.assertTrue(True)
+
+
+    def test_scope_chain_diagnostic_14(self):
+        """
+        DIAGNOSTIC TEST — Scope chain walk for hooks inside function declarations.
+
+        Reproduces the transfer.resolver.ts pattern:
+          - GQL defs at module level (const GET_X = gql`...`)
+          - Hooks inside separate function declarations (function useX() { useQuery(GET_X) })
+
+        This test dumps the parent_symbol chain to diagnose why _resolve_gql_for_hook
+        fails for same-file references when hooks are inside function declarations.
+
+        Run: python -m pytest tests/test_ts.py::TestLocalApolloClientPatterns::test_scope_chain_diagnostic_14 -v -s
+        """
+        code = """\
+import { gql, useQuery, useMutation } from '@apollo/client';
+
+const GET_TRANSFER = gql`
+  query GetTransfer($id: ID!) {
+    transfer(id: $id) {
+      id
+      amount
+      status
+    }
+  }
+`;
+
+const GET_TRANSFER_LIMITS = gql`
+  query GetTransferLimits($accountId: ID!) {
+    transferLimits(accountId: $accountId) {
+      daily
+      monthly
+      remaining
+    }
+  }
+`;
+
+const INITIATE_TRANSFER = gql`
+  mutation InitiateTransfer($input: TransferInput!) {
+    initiateTransfer(input: $input) {
+      id
+      status
+    }
+  }
+`;
+
+function useTransferData(transferId: string) {
+  const { data, loading, error } = useQuery(GET_TRANSFER, { variables: { transferId } });
+  return { data, loading, error };
+}
+
+function useTransferLimits(accountId: string) {
+  const { data, loading } = useQuery(GET_TRANSFER_LIMITS, { variables: { accountId } });
+  return { data, loading };
+}
+
+function useInitiateTransfer() {
+  const [initiate, { data, loading }] = useMutation(INITIATE_TRANSFER);
+  return { initiate, data, loading };
+}
+"""
+        module = SourceFile('C:\\Cast\\GraphQL\\transfer_resolver.ts', text=code)
+        apollo_analysis_results = analyse(module)
+
+        file_path = module.get_path()
+        gql_defs = apollo_analysis_results.gql_definitions_by_file[file_path]
+        hooks = apollo_analysis_results.apollo_hooks_by_file[file_path]
+
+        print("\n" + "=" * 80)
+        print("DIAGNOSTIC — Scope chain walk for function-declared hooks")
+        print("=" * 80)
+
+        # ─── 1. Dump all symbols in module ────────────────────────────────────
+        print("\n--- module.get_all_symbols() ---")
+        all_symbols = module.get_all_symbols()
+        print("  Total symbols: {}".format(len(all_symbols)))
+        for sym in all_symbols:
+            sym_type = type(sym).__name__
+            sym_name = sym.get_name() if hasattr(sym, 'get_name') else '?'
+            parent = sym.get_parent_symbol() if hasattr(sym, 'get_parent_symbol') else None
+            parent_type = type(parent).__name__ if parent else 'None'
+            parent_name = parent.get_name() if parent and hasattr(parent, 'get_name') else 'N/A'
+            print("  sym={:<40s} type={:<25s} parent_type={:<20s} parent_name={} id(sym)={} id(parent)={}".format(
+                sym_name, sym_type, parent_type, parent_name, id(sym), id(parent) if parent else 'None'))
+
+        print("\n  id(module) = {}".format(id(module)))
+
+        # ─── 2. Dump GQL defs and their parent_symbol ─────────────────────────
+        print("\n--- GQL definitions ({}) ---".format(len(gql_defs)))
+        for gql_def in gql_defs:
+            ps = getattr(gql_def, 'parent_symbol', 'ATTR_MISSING')
+            ps_type = type(ps).__name__ if ps and ps != 'ATTR_MISSING' else str(ps)
+            ps_name = ps.get_name() if ps and ps != 'ATTR_MISSING' and hasattr(ps, 'get_name') else 'N/A'
+            ps_id = id(ps) if ps and ps != 'ATTR_MISSING' else 'N/A'
+            print("  gql_def.name={:<30s} parent_symbol type={:<20s} name={:<20s} id={}".format(
+                gql_def.name, ps_type, ps_name, ps_id))
+            # Check if parent_symbol is module
+            if ps and ps != 'ATTR_MISSING':
+                print("    parent_symbol is module? {}  (id match: {})".format(
+                    ps is module, id(ps) == id(module)))
+
+        # ─── 3. Dump hooks and their parent_symbol + full scope chain ──────────
+        print("\n--- Hooks ({}) ---".format(len(hooks)))
+        for hook in hooks:
+            ps = getattr(hook, 'parent_symbol', None)
+            ps_type = type(ps).__name__ if ps else 'None'
+            ps_name = ps.get_name() if ps and hasattr(ps, 'get_name') else 'N/A'
+            ps_id = id(ps) if ps else 'None'
+            print("  hook={}:{:<30s} parent_symbol type={:<20s} name={:<20s} id={}".format(
+                hook.hook_name, hook.operation_name, ps_type, ps_name, ps_id))
+
+            # Walk the full scope chain
+            print("    Scope chain walk:")
+            scope = ps
+            step = 0
+            visited = set()
+            while scope is not None:
+                scope_id = id(scope)
+                if scope_id in visited:
+                    print("      [{}] CYCLE DETECTED at id={}".format(step, scope_id))
+                    break
+                visited.add(scope_id)
+                scope_type = type(scope).__name__
+                scope_name = scope.get_name() if hasattr(scope, 'get_name') else '?'
+                is_module = scope is module
+                print("      [{}] type={:<20s} name={:<30s} id={:<20d} is_module={}".format(
+                    step, scope_type, scope_name, scope_id, is_module))
+                scope = getattr(scope, 'get_parent_symbol', lambda: None)()
+                step += 1
+            print("      [{}] None (end of chain)".format(step))
+
+        # ─── 4. Simulate the scope chain resolution ────────────────────────────
+        print("\n--- Simulated scope chain resolution ---")
+        # Build scoped_gql_defs like the analyzer would
+        scoped_gql_defs = {}
+        for gql_def in gql_defs:
+            ps = getattr(gql_def, 'parent_symbol', None)
+            scoped_key = (file_path, gql_def.name, id(ps) if ps is not None else None)
+            if scoped_key not in scoped_gql_defs:
+                scoped_gql_defs[scoped_key] = gql_def.name
+            print("  STORED: key=({}, {}, {})".format(file_path[-30:], gql_def.name, id(ps) if ps else 'None'))
+
+        for hook in hooks:
+            hook_ps = getattr(hook, 'parent_symbol', None)
+            var_name = hook.operation_name
+            print("\n  RESOLVING hook {}:{} ...".format(hook.hook_name, var_name))
+            resolved = False
+            scope = hook_ps
+            step = 0
+            visited = set()
+            while scope is not None:
+                scope_id = id(scope)
+                if scope_id in visited:
+                    break
+                visited.add(scope_id)
+                key = (file_path, var_name, scope_id)
+                if key in scoped_gql_defs:
+                    print("    FOUND at step {} → scope type={} name={} id={}".format(
+                        step, type(scope).__name__,
+                        scope.get_name() if hasattr(scope, 'get_name') else '?',
+                        scope_id))
+                    resolved = True
+                    break
+                else:
+                    print("    step {} MISS: type={} name={} id={}".format(
+                        step, type(scope).__name__,
+                        scope.get_name() if hasattr(scope, 'get_name') else '?',
+                        scope_id))
+                scope = getattr(scope, 'get_parent_symbol', lambda: None)()
+                step += 1
+            if not resolved:
+                print("    *** UNRESOLVED *** — scope chain exhausted without match")
+
+        # ─── 5. Check hook.gql_definition (set by create_links) ───────────────
+        print("\n--- hook.gql_definition (via create_links) ---")
+        for hook in hooks:
+            gql_link = hook.gql_definition
+            if gql_link:
+                print("  {}:{} → linked to op={}".format(
+                    hook.hook_name, hook.operation_name, gql_link.get('operationName', '?')))
+            else:
+                print("  {}:{} → *** NO LINK ***".format(hook.hook_name, hook.operation_name))
+
+        print("\n" + "=" * 80)
+        print("FIN DIAGNOSTIC")
+        print("=" * 80)
+
+        # ─── Assertions ──────────────────────────────────────────────────────
+        # Basic checks that should pass
+        self.assertEqual(len(gql_defs), 3, "Should find 3 GQL definitions")
+        self.assertEqual(len(hooks), 3, "Should find 3 hooks")
+
+        # The critical assertion: hooks inside function declarations should
+        # still link to module-level GQL definitions
+        for hook in hooks:
+            self.assertIsNotNone(
+                hook.gql_definition,
+                "Hook {}:{} should link to its GQL definition (same-file, module-level)".format(
+                    hook.hook_name, hook.operation_name))
+
+
 if __name__ == "__main__":
     unittest.main()
