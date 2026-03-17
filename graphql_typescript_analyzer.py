@@ -249,6 +249,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         Strategy — scope chain walk, nearest-scope-wins:
           1. Same-file: walk from the hook's scope upward through parent scopes.
              First match wins (lexical scoping: inner scope shadows outer).
+          1.5. Same-file flat fallback: id()-based walk always fails with CAST Boost.Python
+             wrappers (each call creates a new wrapper object). String-keyed (fp, var_name)
+             lookup in gql_obj_by_file_var avoids the id() problem entirely.
           2. Import-aware cross-file: the consumer file imports `variable_name`
              from a known source file → look up that source file's GQL def.
              Guard: the source def must be exported (non-exported defs are
@@ -262,53 +265,104 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         """
         # 1. Same-file scope chain walk
         if fp and hook_ps is not None:
-            visited = set()
-            scope = hook_ps
-            _diag_steps = []
-            while scope is not None:
-                sid = id(scope)
-                if sid in visited:
-                    _diag_steps.append('CYCLE at id={}'.format(sid))
-                    break
-                visited.add(sid)
-                key = (fp, variable_name, sid)
-                _diag_steps.append('scope_type={} scope_name={} scope_id={} key_match={}'.format(
-                    type(scope).__name__,
-                    scope.get_name() if hasattr(scope, 'get_name') else '?',
-                    sid,
-                    key in self.scoped_gql_defs))
-                if key in self.scoped_gql_defs:
-                    method = 'same_scope' if scope is hook_ps else 'scope_chain'
-                    obj = self.scoped_gql_defs[key]
+            try:
+                visited = set()
+                scope = hook_ps
+                _diag_steps = []
+                while scope is not None:
+                    sid = id(scope)
+                    if sid in visited:
+                        _diag_steps.append('CYCLE at id={}'.format(sid))
+                        break
+                    visited.add(sid)
+                    key = (fp, variable_name, sid)
+                    try:
+                        scope_name = scope.get_name() if hasattr(scope, 'get_name') else '?'
+                    except Exception:
+                        scope_name = '?'
+                    _diag_steps.append('scope_type={} scope_name={} scope_id={} key_match={}'.format(
+                        type(scope).__name__, scope_name, sid, key in self.scoped_gql_defs))
+                    if key in self.scoped_gql_defs:
+                        method = 'same_scope' if scope is hook_ps else 'scope_chain'
+                        obj = self.scoped_gql_defs[key]
+                        try:
+                            obj_name = obj.get_name() if hasattr(obj, 'get_name') else '?'
+                        except Exception:
+                            obj_name = '?'
+                        _glog('RESOLVE', 'Hook', _ctx(),
+                              '{} → {} via {}'.format(variable_name, obj_name, method))
+                        return obj
+                    try:
+                        scope = getattr(scope, 'get_parent_symbol', lambda: None)()
+                    except Exception as e:
+                        log.warning('[GraphQL][TS] _resolve_gql_for_hook: get_parent_symbol failed '
+                                    'for var={} scope_type={}: {}'.format(
+                                        variable_name, type(scope).__name__, str(e)))
+                        break
+                _glog('DIAG', 'ScopeWalk', _ctx(),
+                      'MISS var={} hook_ps_type={} hook_ps_id={} steps=[{}]'.format(
+                          variable_name,
+                          type(hook_ps).__name__ if hook_ps else 'None',
+                          id(hook_ps) if hook_ps else 'None',
+                          ' | '.join(_diag_steps)))
+            except Exception as e:
+                log.warning('[GraphQL][TS] _resolve_gql_for_hook: scope walk crashed '
+                            'for var={}: {}'.format(variable_name, str(e)))
+
+        # 1.5. Same-file flat fallback.
+        # The scope chain walk above uses id() to compare CAST Boost.Python wrapper objects.
+        # Each call to get_all_symbols() / get_parent_symbol() creates a NEW Python wrapper
+        # for the same underlying C++ object, so id() comparisons always fail (849 MISSes
+        # observed in production logs). Fall back to a string-keyed lookup: (file_path, var_name).
+        # No export guard — same-file access is always valid regardless of export status.
+        if fp:
+            try:
+                obj = self.gql_obj_by_file_var.get((fp, variable_name))
+                if obj is not None:
+                    try:
+                        obj_name = obj.get_name() if hasattr(obj, 'get_name') else '?'
+                    except Exception:
+                        obj_name = '?'
                     _glog('RESOLVE', 'Hook', _ctx(),
-                          '{} → {} via {}'.format(variable_name, obj.get_name() if hasattr(obj, 'get_name') else '?', method))
+                          '{} → {} via same-file flat fallback'.format(variable_name, obj_name))
                     return obj
-                scope = getattr(scope, 'get_parent_symbol', lambda: None)()
-            _glog('DIAG', 'ScopeWalk', _ctx(),
-                  'MISS var={} hook_ps_type={} hook_ps_id={} steps=[{}]'.format(
-                      variable_name,
-                      type(hook_ps).__name__ if hook_ps else 'None',
-                      id(hook_ps) if hook_ps else 'None',
-                      ' | '.join(_diag_steps)))
+                _glog('DIAG', 'FlatFallback', _ctx(),
+                      'MISS var={} not in gql_obj_by_file_var for fp={}'.format(variable_name, fp))
+            except Exception as e:
+                log.warning('[GraphQL][TS] _resolve_gql_for_hook: flat fallback crashed '
+                            'for var={} fp={}: {}'.format(variable_name, fp, str(e)))
 
         # 2. Import-aware cross-file lookup
         if fp:
-            import_entry = self.imported_var_to_file.get((fp, variable_name))
-            if import_entry is not None:
-                source_path, original_name = import_entry
-                obj = self.gql_obj_by_file_var.get((source_path, original_name))
-                if obj is not None:
-                    fv_key = (source_path, original_name)
-                    if fv_key not in self.exported_gql_fv_keys:
+            try:
+                import_entry = self.imported_var_to_file.get((fp, variable_name))
+                if import_entry is not None:
+                    source_path, original_name = import_entry
+                    obj = self.gql_obj_by_file_var.get((source_path, original_name))
+                    if obj is not None:
+                        fv_key = (source_path, original_name)
+                        if fv_key not in self.exported_gql_fv_keys:
+                            _glog('RESOLVE', 'Hook', _ctx(),
+                                  '{} → BLOCKED (not exported, file={})'.format(
+                                      variable_name, source_path))
+                            return None
+                        try:
+                            obj_name = obj.get_name() if hasattr(obj, 'get_name') else '?'
+                        except Exception:
+                            obj_name = '?'
                         _glog('RESOLVE', 'Hook', _ctx(),
-                              '{} → BLOCKED (not exported, file={})'.format(variable_name, source_path))
-                        return None
-                    _glog('RESOLVE', 'Hook', _ctx(),
-                          '{} → {} via import from {} (original={})'.format(
-                              variable_name, obj.get_name() if hasattr(obj, 'get_name') else '?',
-                              source_path, original_name))
-                    return obj
-                return 'PENDING'
+                              '{} → {} via import from {} (original={})'.format(
+                                  variable_name, obj_name, source_path, original_name))
+                        return obj
+                    _glog('DIAG', 'ImportAware', _ctx(),
+                          'PENDING var={} source_path={} original={} (def not yet processed)'.format(
+                              variable_name, source_path, original_name))
+                    return 'PENDING'
+                _glog('DIAG', 'ImportAware', _ctx(),
+                      'MISS var={} not in imported_var_to_file for fp={}'.format(variable_name, fp))
+            except Exception as e:
+                log.warning('[GraphQL][TS] _resolve_gql_for_hook: import-aware lookup crashed '
+                            'for var={} fp={}: {}'.format(variable_name, fp, str(e)))
 
         return None
 
@@ -384,6 +438,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 pass
             
             # Step 8: Store in caches for LEVEL 2 linking.
+            _c = _ctx()
             self.gql_definitions[kb_name] = client_obj
 
             # Scope-keyed map: stores KB object directly for same-file scope chain walk.
@@ -412,7 +467,6 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 self.exported_gql_fv_keys.add(fv_key)
             self.created_objects.append({'name': kb_name, 'type': object_type, 'file_path': file_path})
 
-            _c = _ctx()
             _glog('RESULT', 'Object', _c, '{} "{}" created'.format(object_type, kb_name))
 
         except Exception as e:
