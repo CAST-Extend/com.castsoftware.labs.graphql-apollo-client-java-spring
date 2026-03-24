@@ -63,8 +63,9 @@ _ANGULAR_METHODS = {
 
 # Direct Apollo Client methods → (KB type, display prefix)
 _CLIENT_METHODS = {
-    'query':  ('JsGraphQLApolloClientQuery',    'client.query'),
-    'mutate': ('JsGraphQLApolloClientMutation', 'client.mutate'),
+    'query':     ('JsGraphQLApolloClientQuery',        'client.query'),
+    'mutate':    ('JsGraphQLApolloClientMutation',     'client.mutate'),
+    'subscribe': ('JsGraphQLApolloClientSubscription', 'client.subscribe'),
 }
 
 # GraphQL operation keyword → GQL definition KB type
@@ -78,10 +79,10 @@ _OP_TYPE_MAP = {
 _CODEGEN_PATTERN = re.compile(
     r'^use[A-Z][A-Za-z0-9_]*(Query|LazyQuery|Mutation|Subscription)$')
 _CODEGEN_SUFFIX_MAP = {
-    'Query':        'JsGraphQLApolloHookQuery',
-    'LazyQuery':    'JsGraphQLApolloHookLazyQuery',
-    'Mutation':     'JsGraphQLApolloHookMutation',
-    'Subscription': 'JsGraphQLApolloHookSubscription',
+    'Query':        'JsGraphQLApolloCodegenQuery',
+    'LazyQuery':    'JsGraphQLApolloCodegenQuery',       # no dedicated LazyQuery codegen type in metamodel
+    'Mutation':     'JsGraphQLApolloCodegenMutation',
+    'Subscription': 'JsGraphQLApolloCodegenSubscription',
 }
 
 # Import names that signal a file uses Apollo Client (used to filter jsContent)
@@ -208,13 +209,19 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     if what in _ANGULAR_IMPORT_NAMES:
                         is_angular = True
                     # Detect aliased gql imports: import gqlTag from 'graphql-tag'
-                    # get_what_name() returns the local alias, not the export name,
-                    # so we check the import's string repr for a known GQL package.
+                    # get_what_name() returns the local name (e.g. 'gqlTag'), not 'gql'.
+                    # Use get_from_token().name to read the package string directly,
+                    # matching how CAST's own use_framework() identifies packages.
                     if not has_filter_import:
                         try:
-                            imp_str = str(imp)
-                            if any(pkg in imp_str for pkg in GQL_PACKAGES):
-                                has_filter_import = True
+                            from_token = imp.get_from_token()
+                            if from_token:
+                                from_text = (getattr(from_token, 'name', None)
+                                             or getattr(from_token, 'text', None)
+                                             or '')
+                                from_text = from_text.strip("'\" ")
+                                if from_text in GQL_PACKAGES:
+                                    has_filter_import = True
                         except Exception:
                             pass
                 except Exception:
@@ -282,10 +289,9 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
           3. import gqlTag from 'graphql-tag'                  → adds 'gqlTag'
              (default import: get_what_name() returns local binding, not 'gql')
 
-        For form 3, we detect via str(imp) containing a known GQL package name.
-        This approach may also match other named exports from GQL packages (e.g.
-        ApolloClient), but those names are never used as template tags, so false
-        positives are harmless.
+        For form 3, we use get_from_token().name to read the package string directly,
+        matching how CAST's own use_framework() identifies packages. The local name
+        (e.g. 'gqlTag') is then added to aliases so FunctionCall detection finds it.
         """
         aliases = {'gql'}
         try:
@@ -305,11 +311,17 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                         continue
                     # Form 3: default/aliased import from a known GQL package
                     # e.g. import gqlTag from 'graphql-tag'
+                    # Use get_from_token().name (same as CAST's use_framework()).
                     if local and local not in ('default', 'unknown', ''):
                         try:
-                            imp_str = str(imp)
-                            if any(pkg in imp_str for pkg in GQL_PACKAGES):
-                                aliases.add(local)
+                            from_token = imp.get_from_token()
+                            if from_token:
+                                from_text = (getattr(from_token, 'name', None)
+                                             or getattr(from_token, 'text', None)
+                                             or '')
+                                from_text = from_text.strip("'\" ")
+                                if from_text in GQL_PACKAGES:
+                                    aliases.add(local)
                         except Exception:
                             pass
                 except Exception:
@@ -505,12 +517,22 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         variables = ', '.join(
             '$' + v for v in re.findall(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', clean))
 
-        # Fields selected: identifiers in the first { } block of the operation body
+        # Fields selected: top-level field names in the operation body.
+        # Pattern matches identifiers right after '{' that are followed by '(' or '{',
+        # i.e. the first-level fields of the operation — NOT the leaf fields inside them.
+        # Mirrors the TS analyzer's parse_graphql_content() regex.
         fields = ''
-        fb = re.search(r'\{([^{}]+)\}', clean)
-        if fb:
-            field_matches = re.findall(r'\b([a-z][a-zA-Z0-9_]*)\b', fb.group(1))
-            fields = ', '.join(dict.fromkeys(field_matches))  # ordered dedup
+        fields_pattern = r'\{\s*([a-z][a-zA-Z0-9_]*)\s*[\(\{]'
+        field_matches = re.findall(fields_pattern, clean)
+        keywords = {'query', 'mutation', 'subscription', 'fragment'}
+        unique_fields = []
+        seen = set()
+        for f in field_matches:
+            if f not in keywords and f not in seen:
+                unique_fields.append(f)
+                seen.add(f)
+        if unique_fields:
+            fields = ', '.join(unique_fields)
 
         return op_type, op_name, variables, fields
 
@@ -523,9 +545,21 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 self._failed += 1
                 return
 
+            # Build unique fullname (file:line format, same as TS analyzer — F3 fix)
+            try:
+                line_num = ast_node.get_begin_line() if hasattr(ast_node, 'get_begin_line') else 0
+            except Exception:
+                line_num = 0
+            try:
+                file_path_for_fn = str(jsContent.get_file().get_path())
+            except Exception:
+                file_path_for_fn = ''
+            fullname = file_path_for_fn + ':' + str(line_num)
+
             obj = CustomObject()
             obj.set_name(op_name)       # named by operation_name (Bug 8 fix)
             obj.set_type(op_type)
+            obj.set_fullname(fullname)
             obj.set_parent(parent_kb)
 
             obj.save()
@@ -586,6 +620,9 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
 
     def _extract_apollo_hooks(self, jsContent):
         """Walk jsContent AST; register every Apollo hook / client method call."""
+        # Compute gql aliases once per file (needed for F1 inline gql detection)
+        gql_aliases = self._gql_aliases(jsContent)
+
         # Angular files import { Apollo } from 'apollo-angular'.
         # For these files, single-part calls like query({query:VAR}) or
         # mutate({mutation:VAR}) must be routed to _ANGULAR_METHODS, not _CLIENT_METHODS.
@@ -610,6 +647,10 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     if last_name in _APOLLO_HOOKS:
                         kb_type  = _APOLLO_HOOKS[last_name]
                         var_name = self._simple_hook_arg(parts[0])
+                        if not var_name:
+                            # F1: inline gql — useQuery(gql`query X {...}`)
+                            var_name = self._try_inline_gql(
+                                parts[0], node, jsContent, gql_aliases)
                         if var_name:
                             self._create_hook(
                                 last_name, kb_type, var_name, last_name,
@@ -694,6 +735,50 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
         if hasattr(param, 'is_function_call') and param.is_function_call():
             return None
         return self._ident_name(param)
+
+    def _try_inline_gql(self, first_part, hook_node, jsContent, gql_aliases):
+        """F1: detect inline gql`...` as hook argument, create GQL def, return op_name.
+
+        Pattern: useQuery(gql`query GetData { field }`)
+        The gql call is the first parameter of the hook's first FunctionCallPart.
+        We create the GQL definition object inline (not exported, var_name = op_name)
+        and return op_name so the caller can create the hook with proper useLink resolution.
+        Returns None if the argument is not an inline gql call or has no operation name.
+        """
+        params = _part_params(first_part)
+        if not params:
+            return None
+        param = params[0]
+        if not (hasattr(param, 'is_function_call') and param.is_function_call()):
+            return None
+        try:
+            if param.get_name() not in gql_aliases:
+                return None
+        except Exception:
+            return None
+        # Extract template text from the inline gql call
+        try:
+            gql_parts = param.get_function_call_parts()
+            if not gql_parts:
+                return None
+            gql_params = _part_params(gql_parts[0])
+            if not gql_params:
+                return None
+            text = self._eval_text(gql_params[0])
+            if not text:
+                return None
+        except Exception:
+            return None
+        op_type, op_name, variables, fields = self._parse_gql_content(text)
+        if op_name is None:
+            return None
+        _c = _ctx()
+        _glog('DETECT', 'GqlDef', _c,
+              'inline gql in hook: op={} ({})'.format(op_name, op_type))
+        self._create_gql_def(
+            op_name, op_name, op_type, text, variables, fields, param, jsContent,
+            is_exported=False)
+        return op_name
 
     def _object_arg(self, last_part, keys=('query', 'mutation', 'subscription')):
         """
@@ -810,6 +895,18 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 except Exception:
                     scope = None
 
+        # 1.5. Same-file flat fallback (B2 fix — mirrors TS Bug 1.5).
+        # The scope chain walk above uses id() to compare CAST Boost.Python wrapper objects.
+        # Each call may create a NEW Python wrapper for the same underlying C++ object, so
+        # id() comparisons can fail. Fall back to a string-keyed lookup: (file_path, var_name).
+        if file_path:
+            obj = self.gql_obj_by_file_var.get((file_path, var_name))
+            if obj is not None:
+                _glog('RESOLVE', 'Hook', _ctx(),
+                      '{} → {} via same-file flat fallback'.format(
+                          var_name, obj.get_name() if hasattr(obj, 'get_name') else '?'))
+                return obj
+
         # 2. Import-aware cross-file lookup
         if file_path:
             import_entry = self.imported_var_to_file.get((file_path, var_name))
@@ -840,13 +937,29 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 self._failed += 1
                 return
 
-            hook_name = display_name + ':' + var_name
+            # F6 fix: codegen hooks use just the function name (no redundant "name:name")
+            if source_pattern == _PAT_CODEGEN:
+                hook_name = var_name
+            else:
+                hook_name = display_name + ':' + var_name
             _c = _ctx()
             _glog('DETECT', 'Hook', _c, '{} var={}'.format(display_name, var_name))
+
+            # Build unique fullname (file:line format, same as TS analyzer — F3 fix)
+            try:
+                line_num = ast_node.get_begin_line() if hasattr(ast_node, 'get_begin_line') else 0
+            except Exception:
+                line_num = 0
+            try:
+                fp_for_fn = str(jsContent.get_file().get_path())
+            except Exception:
+                fp_for_fn = ''
+            fullname = fp_for_fn + ':' + str(line_num)
 
             obj = CustomObject()
             obj.set_name(hook_name)
             obj.set_type(hook_type)
+            obj.set_fullname(fullname)
             obj.set_parent(parent_kb)
 
             obj.save()
@@ -942,8 +1055,15 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
 
             resolved_obj = None
 
-            # Import-aware lookup with export guard
+            # B1 fix: same-file flat fallback (mirrors TS on_end resolution).
+            # At Phase 3 time all files are processed, so gql_obj_by_file_var is complete.
             if fp:
+                same_file_obj = self.gql_obj_by_file_var.get((fp, var_name))
+                if same_file_obj is not None:
+                    resolved_obj = same_file_obj
+
+            # Import-aware lookup with export guard (only if same-file didn't resolve)
+            if resolved_obj is None and fp:
                 import_entry = self.imported_var_to_file.get((fp, var_name))
                 if import_entry is not None:
                     source_path, original_name = import_entry

@@ -482,7 +482,7 @@
 	<category name="GraphQL_NodeJs_Resolver" rid="58">
 		<description>NodeJS Apollo Server resolver function</description>
 		<property name="operationType" type="string" rid="107">
-			<description>GraphQL operation type (Query, Mutation, Subscription)</description>
+			<description>GraphQL operation type (Query, Mutation, Subscription, or custom type name)</description>
 			<attribute name="INF_TYPE" intValue="2135107"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
@@ -491,22 +491,96 @@
 			<attribute name="INF_TYPE" intValue="2135108"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
+		<property name="serviceClass" type="string" rid="110">
+			<description>Class name of the service called by this resolver (e.g. UserService)</description>
+			<attribute name="INF_TYPE" intValue="2135110"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="serviceMethod" type="string" rid="111">
+			<description>Method name of the service called by this resolver (e.g. findAll)</description>
+			<attribute name="INF_TYPE" intValue="2135111"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
 	</category>
-	<!-- NodeJsApolloSchema: inline typeDefs in a NodeJS Apollo Server file -->
-	<type name="NodeJsApolloSchema" rid="59">
-		<description>NodeJS Apollo Server inline typeDefs schema</description>
-		<inheritedCategory name="UAObject"/>
-		<inheritedCategory name="GraphQL_Artifacts"/>
-		<inheritedCategory name="GraphQL"/>
-		<inheritedCategory name="GraphQL_Module"/>
-	</type>
-	<!-- NodeJsResolver: one resolver function (e.g. Query.users) -->
-	<type name="NodeJsResolver" rid="60">
-		<description>NodeJS Apollo Server resolver function</description>
+	<!-- TS NodeJS Apollo Server resolver types (one per operation type) -->
+	<type name="TsNodeJsResolverQuery" rid="61">
+		<description>TS NodeJS Apollo Server Query resolver</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<type name="TsNodeJsResolverMutation" rid="62">
+		<description>TS NodeJS Apollo Server Mutation resolver</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<type name="TsNodeJsResolverSubscription" rid="63">
+		<description>TS NodeJS Apollo Server Subscription resolver</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<type name="TsNodeJsResolverCustom" rid="64">
+		<description>TS NodeJS Apollo Server custom field resolver (e.g. User.posts)</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<!-- JS NodeJS Apollo Server resolver types (one per operation type) -->
+	<type name="JsNodeJsResolverQuery" rid="65">
+		<description>JS NodeJS Apollo Server Query resolver</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<type name="JsNodeJsResolverMutation" rid="66">
+		<description>JS NodeJS Apollo Server Mutation resolver</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<type name="JsNodeJsResolverSubscription" rid="67">
+		<description>JS NodeJS Apollo Server Subscription resolver</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<type name="JsNodeJsResolverCustom" rid="68">
+		<description>JS NodeJS Apollo Server custom field resolver (e.g. User.posts)</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+		<inheritedCategory name="GraphQL_NodeJs_Resolver"/>
+	</type>
+	<!-- NodeJS Apollo Server inline typeDefs schema (TS and JS variants) -->
+	<type name="TsNodeJsApolloSchema" rid="69">
+		<description>TS NodeJS Apollo Server inline typeDefs schema</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="JsNodeJsApolloSchema" rid="70">
+		<description>JS NodeJS Apollo Server inline typeDefs schema</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 </metaModel>

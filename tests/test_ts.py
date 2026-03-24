@@ -2564,5 +2564,181 @@ function useInitiateTransfer() {
                     hook.hook_name, hook.operation_name))
 
 
+    # ════════════════════════════════════════════════════════════════════════
+    # MODULE 14 — Resolver Detection (regex-based, no CAST KB needed)
+    # ════════════════════════════════════════════════════════════════════════
+
+    def test_ts_resolver_regex_detection_14(self):
+        """
+        Test that the TS resolver detection regex correctly identifies:
+        - Query, Mutation, Subscription resolver fields
+        - Custom type field resolvers (e.g. User.posts)
+        - Service call extraction (ClassName.methodName pattern)
+        - _extract_brace_content helper
+        """
+        from graphql_typescript_analyzer import (
+            _TS_SERVICE_CALL_RE, _RESOLVER_SECTION_RE, _RESOLVER_FIELD_RE,
+            _SKIP_FIELD_NAMES, _BUILTIN_GRAPHQL_NAMES,
+        )
+
+        # ─── 1. _RESOLVER_SECTION_RE finds all type sections ──────────────
+        resolver_source = """\
+const resolvers = {
+  Query: {
+    getUsers: async (_: unknown, args: any, ctx: Context) => {
+      return UserService.findAll(args.filter);
+    },
+    getUser: async (_: unknown, { id }: { id: string }, ctx: Context) => {
+      return UserService.findById(id);
+    },
+  },
+  Mutation: {
+    createUser: async (_: unknown, { input }: any, ctx: Context) => {
+      return UserService.create(input);
+    },
+    deleteUser: async (_: unknown, { id }: { id: string }) => {
+      return UserService.delete(id);
+    },
+  },
+  Subscription: {
+    onUserCreated: {
+      subscribe: withFilter(
+        () => pubsub.asyncIterator(['USER_CREATED']),
+        (payload: any, variables: any) => true
+      ),
+    },
+  },
+  User: {
+    posts: (parent: any, args: any, ctx: Context) => {
+      return PostService.findByUserId(parent.id);
+    },
+    profile: (parent: any) => {
+      return ProfileService.getByUserId(parent.id);
+    },
+  },
+};
+"""
+        sections = list(_RESOLVER_SECTION_RE.finditer(resolver_source))
+        section_names = [m.group(1) for m in sections]
+        print("\n--- Resolver section headers found ---")
+        print("Sections: {}".format(section_names))
+
+        self.assertIn('Query', section_names)
+        self.assertIn('Mutation', section_names)
+        self.assertIn('Subscription', section_names)
+        self.assertIn('User', section_names)
+
+        # ─── 2. _RESOLVER_FIELD_RE finds field names ──────────────────────
+        query_section = """\
+    getUsers: async (_: unknown, args: any, ctx: Context) => {
+      return UserService.findAll(args.filter);
+    },
+    getUser: async (_: unknown, { id }: { id: string }, ctx: Context) => {
+      return UserService.findById(id);
+    },
+"""
+        fields = [m.group(1) for m in _RESOLVER_FIELD_RE.finditer(query_section)]
+        # Filter out JS keywords
+        fields = [f for f in fields if f not in ('async', 'function', 'return',
+                                                  'const', 'let', 'var', 'if',
+                                                  'else', 'try', 'catch')]
+        print("Query fields: {}".format(fields))
+        self.assertIn('getUsers', fields)
+        self.assertIn('getUser', fields)
+
+        mutation_section = """\
+    createUser: async (_: unknown, { input }: any, ctx: Context) => {
+      return UserService.create(input);
+    },
+    deleteUser: async (_: unknown, { id }: { id: string }) => {
+      return UserService.delete(id);
+    },
+"""
+        fields_m = [m.group(1) for m in _RESOLVER_FIELD_RE.finditer(mutation_section)]
+        fields_m = [f for f in fields_m if f not in ('async', 'function', 'return',
+                                                      'const', 'let', 'var')]
+        print("Mutation fields: {}".format(fields_m))
+        self.assertIn('createUser', fields_m)
+        self.assertIn('deleteUser', fields_m)
+
+        # ─── 3. _TS_SERVICE_CALL_RE extracts (class, method) ──────────────
+        body1 = "return UserService.findAll(args.filter);"
+        m1 = _TS_SERVICE_CALL_RE.search(body1)
+        self.assertIsNotNone(m1, "Should match UserService.findAll")
+        self.assertEqual(m1.group(1), 'UserService')
+        self.assertEqual(m1.group(2), 'findAll')
+
+        body2 = "return PostService.findByUserId(parent.id);"
+        m2 = _TS_SERVICE_CALL_RE.search(body2)
+        self.assertIsNotNone(m2, "Should match PostService.findByUserId")
+        self.assertEqual(m2.group(1), 'PostService')
+        self.assertEqual(m2.group(2), 'findByUserId')
+
+        # False positive filter: Promise.resolve should be skipped
+        body3 = "return Promise.resolve(null);"
+        m3 = _TS_SERVICE_CALL_RE.search(body3)
+        self.assertIsNotNone(m3, "Regex matches Promise.resolve")
+        self.assertEqual(m3.group(1), 'Promise')
+        # The _extract_ts_service_call method filters this out — here we test the regex only
+
+        print("Service call regex: all assertions passed")
+
+        # ─── 4. _extract_brace_content helper ─────────────────────────────
+        from graphql_typescript_analyzer import GraphQLTypeScriptAnalyzer
+        analyzer = GraphQLTypeScriptAnalyzer()
+
+        test_text = '{ getUsers: () => {}, getUser: () => {} }'
+        content = analyzer._extract_brace_content(test_text, 0)
+        self.assertIsNotNone(content, "Should extract brace content")
+        self.assertIn('getUsers', content)
+        self.assertIn('getUser', content)
+        print("Brace content: '{}'".format(content[:60]))
+
+        # Nested braces
+        nested = '{ outer: { inner: 1 }, other: 2 }'
+        content_n = analyzer._extract_brace_content(nested, 0)
+        self.assertIsNotNone(content_n)
+        self.assertIn('inner', content_n)
+        self.assertIn('other', content_n)
+
+        # String with braces inside (should not break balance)
+        with_string = '{ name: "hello { world }", value: 1 }'
+        content_s = analyzer._extract_brace_content(with_string, 0)
+        self.assertIsNotNone(content_s)
+        self.assertIn('value', content_s)
+
+        print("_extract_brace_content: all assertions passed")
+
+        # ─── 5. _extract_ts_service_call helper ───────────────────────────
+        # Normal case
+        cls, method = analyzer._extract_ts_service_call("return UserService.findAll(args);")
+        self.assertEqual(cls, 'UserService')
+        self.assertEqual(method, 'findAll')
+
+        # False positive: Promise.resolve filtered out
+        cls2, method2 = analyzer._extract_ts_service_call("return Promise.resolve(null);")
+        self.assertIsNone(cls2, "Promise should be filtered as false positive")
+        self.assertIsNone(method2)
+
+        # No service call
+        cls3, method3 = analyzer._extract_ts_service_call("return args.id;")
+        self.assertIsNone(cls3)
+        self.assertIsNone(method3)
+
+        print("_extract_ts_service_call: all assertions passed")
+
+        # ─── 6. _SKIP_FIELD_NAMES and _BUILTIN_GRAPHQL_NAMES ─────────────
+        self.assertIn('__resolveType', _SKIP_FIELD_NAMES)
+        self.assertIn('subscribe', _SKIP_FIELD_NAMES)
+        self.assertIn('Query', _BUILTIN_GRAPHQL_NAMES)
+        self.assertIn('String', _BUILTIN_GRAPHQL_NAMES)
+        self.assertNotIn('User', _BUILTIN_GRAPHQL_NAMES,
+                         "User should NOT be built-in — it's a custom resolver type")
+
+        print("\n" + "=" * 80)
+        print("MODULE 14 — Resolver Detection: ALL ASSERTIONS PASSED")
+        print("=" * 80)
+
+
 if __name__ == "__main__":
     unittest.main()

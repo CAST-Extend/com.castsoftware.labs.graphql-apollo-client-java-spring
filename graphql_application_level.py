@@ -31,7 +31,7 @@ Python 3.4+ compatible.
 
 import cast_upgrade_1_6_23  # noqa: F401 - Required for CAST SDK compatibility
 from cast.application import ApplicationLevelExtension, ReferenceFinder, create_link
-from cast.application import open_source_file
+from cast.application import open_source_fil`e
 from logging import info, debug, warning
 import traceback
 
@@ -88,6 +88,9 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
 
             # Create links from schema to Node.js resolver functions
             self._link_schema_to_nodejs_resolvers(application)
+
+            # Create links from Node.js resolvers to service methods
+            self._link_resolvers_to_services(application)
 
             info('[GraphQL Application] Cross-technology link creation complete')
             
@@ -440,19 +443,34 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         info('[GraphQL Application]   - Not matched:          ' + str(not_matched) + ' (expected - most Java methods are not GraphQL resolvers)')
         info('[GraphQL Application] ========================================')
 
+    # All 8 resolver type names (TS + JS)
+    _RESOLVER_TYPES = frozenset({
+        'TsNodeJsResolverQuery', 'TsNodeJsResolverMutation',
+        'TsNodeJsResolverSubscription', 'TsNodeJsResolverCustom',
+        'JsNodeJsResolverQuery', 'JsNodeJsResolverMutation',
+        'JsNodeJsResolverSubscription', 'JsNodeJsResolverCustom',
+    })
+
+    # Service method types to index for resolver → service linking
+    _SERVICE_METHOD_TYPES = frozenset({
+        'CAST_TS_Method',
+        'CAST_HTML5_JavaScript_Method',
+        'CAST_HTML5_JavaScript_Generic_Method',
+    })
+
     def _link_schema_to_nodejs_resolvers(self, application):
         """
         Create CALL links from GraphQL schema fields to Node.js resolver functions.
 
-        Mirrors _link_schema_to_backend() for Java, but targets NodeJsResolver
-        objects created by graphql_nodejs_analyzer.py.
+        Targets all 8 resolver types (Ts/JsNodeJsResolver{Query,Mutation,Subscription,Custom})
+        created by graphql_nodejs_analyzer.py and graphql_typescript_analyzer.py.
 
         Matching logic:
-          NodeJsResolver with operationType='Query'  + fieldName='users'
+          Resolver with operationType='Query'  + fieldName='users'
             → callLink ← GraphQLField 'users' under GraphQLType 'Query'
+          Custom resolvers use operationType (e.g. 'User') to find the correct type.
 
-        Link direction: GraphQLField -callLink-> NodeJsResolver
-        (no links originate FROM NodeJsResolver — preserves transaction flow direction)
+        Link direction: GraphQLField -callLink-> Resolver
 
         Args:
             application: CAST Application object
@@ -461,54 +479,49 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
         info('[GraphQL Application] Starting schema-to-NodeJs resolver linking')
         info('[GraphQL Application] ========================================')
 
-        # Find all NodeJsResolver objects with their properties loaded
+        # Find all resolver objects (all 8 types) with their properties loaded
         nodejs_resolvers = [
             obj for obj in application.search_objects(load_properties=True)
-            if obj.get_type() == 'NodeJsResolver'
+            if obj.get_type() in self._RESOLVER_TYPES
         ]
 
         info('[GraphQL Application] Found ' + str(len(nodejs_resolvers))
-             + ' NodeJsResolver object(s)')
+             + ' NodeJs resolver object(s)')
 
         if not nodejs_resolvers:
-            info('[GraphQL Application] No NodeJsResolver objects — skipping')
+            info('[GraphQL Application] No NodeJs resolver objects — skipping')
             return
 
-        # Build schema field index (same logic as _link_schema_to_backend)
-        schema_queries       = {}
-        schema_mutations     = {}
-        schema_subscriptions = {}
+        # Build schema field index: {type_name: {field_name: GraphQLField_obj}}
+        # Includes all GraphQL types (Query, Mutation, Subscription, AND custom types)
+        schema_fields_by_type = {}  # e.g. {'Query': {'getUsers': obj}, 'User': {'posts': obj}}
 
         graphql_types = [obj for obj in application.get_objects()
                          if obj.get_type() == 'GraphQLType']
 
         for type_obj in graphql_types:
             type_name = type_obj.get_name()
-            if type_name not in ('Query', 'Mutation', 'Subscription'):
-                continue
             type_obj.load_children()
-            target_dict = (schema_queries       if type_name == 'Query'
-                           else schema_mutations  if type_name == 'Mutation'
-                           else schema_subscriptions)
+            fields_dict = {}
             for field_obj in type_obj.get_children():
                 if field_obj.get_type() == 'GraphQLField':
-                    target_dict[field_obj.get_name()] = field_obj
+                    fields_dict[field_obj.get_name()] = field_obj
+            if fields_dict:
+                schema_fields_by_type[type_name] = fields_dict
 
+        total_fields = sum(len(v) for v in schema_fields_by_type.values())
         info('[GraphQL Application] Schema index: '
-             + str(len(schema_queries))       + ' query fields, '
-             + str(len(schema_mutations))     + ' mutation fields, '
-             + str(len(schema_subscriptions)) + ' subscription fields')
+             + str(len(schema_fields_by_type)) + ' types, '
+             + str(total_fields) + ' fields total')
 
-        if not schema_queries and not schema_mutations and not schema_subscriptions:
+        if not schema_fields_by_type:
             warning('[GraphQL Application] No GraphQL schema fields found — skipping')
             return
 
-        # Match each NodeJsResolver to its GraphQLField and create callLink
+        # Match each resolver to its GraphQLField and create callLink
         links_created = 0
-        queries_matched       = 0
-        mutations_matched     = 0
-        subscriptions_matched = 0
-        not_matched           = 0
+        matched_by_type = {}
+        not_matched = 0
 
         for resolver_obj in nodejs_resolvers:
             try:
@@ -521,41 +534,132 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                     not_matched += 1
                     continue
 
-                if op_type == 'Query' and field_name in schema_queries:
-                    create_link('callLink', schema_queries[field_name], resolver_obj)
-                    links_created     += 1
-                    queries_matched   += 1
-
-                elif op_type == 'Mutation' and field_name in schema_mutations:
-                    create_link('callLink', schema_mutations[field_name], resolver_obj)
-                    links_created      += 1
-                    mutations_matched  += 1
-
-                elif op_type == 'Subscription' and field_name in schema_subscriptions:
-                    create_link('callLink',
-                                schema_subscriptions[field_name], resolver_obj)
-                    links_created          += 1
-                    subscriptions_matched  += 1
-
+                type_fields = schema_fields_by_type.get(op_type)
+                if type_fields and field_name in type_fields:
+                    create_link('callLink', type_fields[field_name], resolver_obj)
+                    links_created += 1
+                    matched_by_type[op_type] = matched_by_type.get(op_type, 0) + 1
                 else:
                     not_matched += 1
-                    debug('[GraphQL Application] NodeJsResolver not matched: '
+                    debug('[GraphQL Application] Resolver not matched: '
                           + str(op_type) + '.' + str(field_name))
 
             except Exception as e:
-                warning('[GraphQL Application] Error linking NodeJsResolver "'
+                warning('[GraphQL Application] Error linking resolver "'
                         + str(resolver_obj.get_name()) + '": ' + str(e))
                 debug('[GraphQL Application] ' + traceback.format_exc())
 
         info('[GraphQL Application] ========================================')
         info('[GraphQL Application] SCHEMA-NODEJS LINKING SUMMARY: Created '
              + str(links_created) + ' CALL links')
-        info('[GraphQL Application]   - Query resolvers:        '
-             + str(queries_matched) + ' linked')
-        info('[GraphQL Application]   - Mutation resolvers:     '
-             + str(mutations_matched) + ' linked')
-        info('[GraphQL Application]   - Subscription resolvers: '
-             + str(subscriptions_matched) + ' linked')
-        info('[GraphQL Application]   - Not matched:            '
+        for op_type, count in sorted(matched_by_type.items()):
+            info('[GraphQL Application]   - ' + op_type + ' resolvers: '
+                 + str(count) + ' linked')
+        info('[GraphQL Application]   - Not matched: '
              + str(not_matched) + ' (no corresponding GraphQLField found)')
+        info('[GraphQL Application] ========================================')
+
+    def _link_resolvers_to_services(self, application):
+        """
+        Create CALL links from Node.js resolver functions to service methods.
+
+        For each resolver that has serviceClass + serviceMethod properties:
+          TsNodeJsResolverQuery "getUsers" (serviceClass=UserService, serviceMethod=findById)
+            → callLink → CAST_TS_Method "findById" (parent fullname contains "UserService")
+
+        Matching strategy: (class_name, method_name) → KB object, extracted from fullname.
+
+        Args:
+            application: CAST Application object
+        """
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] Starting resolver-to-service linking')
+        info('[GraphQL Application] ========================================')
+
+        # Build method index: (class_name, method_name) → KB object
+        method_index = {}
+        for obj in application.search_objects(load_properties=True):
+            try:
+                obj_type = obj.get_type()
+                if obj_type not in self._SERVICE_METHOD_TYPES:
+                    continue
+                fullname = obj.get_fullname()
+                method_name = obj.get_name()
+                if not fullname or not method_name:
+                    continue
+                parts = fullname.split('.')
+                if len(parts) >= 2:
+                    class_name = parts[-2]
+                    key = (class_name, method_name)
+                    if key not in method_index:
+                        method_index[key] = obj
+            except Exception:
+                pass
+
+        info('[GraphQL Application] Service method index: '
+             + str(len(method_index)) + ' (class, method) entries')
+        for i, (key, obj) in enumerate(list(method_index.items())[:5]):
+            info('[GraphQL Application]   sample[' + str(i) + '] ' + str(key) + ' → ' + str(obj.get_fullname()))
+
+        if not method_index:
+            info('[GraphQL Application] No service methods found — skipping')
+            return
+
+        # Find all resolver objects and try to link to service methods
+        links_created = 0
+        resolvers_with_service = 0
+        not_matched = 0
+        properties_log_count = 0
+
+        for obj in application.search_objects(load_properties=True):
+            try:
+                if obj.get_type() not in self._RESOLVER_TYPES:
+                    continue
+                service_class = obj.get_property(
+                    'GraphQL_NodeJs_Resolver.serviceClass')
+                service_method = obj.get_property(
+                    'GraphQL_NodeJs_Resolver.serviceMethod')
+                if properties_log_count < 5:
+                    info('[GraphQL Application]   resolver sample[' + str(properties_log_count) + '] '
+                         + str(obj.get_name()) + ' → serviceClass=' + str(service_class)
+                         + ', serviceMethod=' + str(service_method))
+                    properties_log_count += 1
+
+                if not service_class or not service_method:
+                    missing = []
+                    if not service_class:
+                        missing.append('serviceClass')
+                    if not service_method:
+                        missing.append('serviceMethod')
+                    try:
+                        file_name = obj.get_position().get_file().get_name()
+                    except Exception:
+                        file_name = '<unknown file>'
+                    warning('[GraphQL Application] Resolver "' + str(obj.get_name())
+                            + '" from "' + file_name + '" is missing propert'
+                            + ('ies: ' if len(missing) > 1 else 'y: ')
+                            + ', '.join(missing))
+                    continue
+
+                resolvers_with_service += 1
+                key = (service_class, service_method)
+                if key in method_index:
+                    create_link('callLink', obj, method_index[key])
+                    links_created += 1
+                else:
+                    not_matched += 1
+                    debug('[GraphQL Application] Service not found: '
+                          + str(service_class) + '.' + str(service_method))
+
+            except Exception as e:
+                warning('[GraphQL Application] Error in resolver→service link: '
+                        + str(e))
+
+        info('[GraphQL Application] ========================================')
+        info('[GraphQL Application] RESOLVER-SERVICE LINKING SUMMARY: '
+             + str(links_created) + ' CALL links created')
+        info('[GraphQL Application]   - Resolvers with service info: '
+             + str(resolvers_with_service))
+        info('[GraphQL Application]   - Service methods not found: '
+             + str(not_matched))
         info('[GraphQL Application] ========================================')

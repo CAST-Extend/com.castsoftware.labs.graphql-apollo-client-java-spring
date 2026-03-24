@@ -4,24 +4,24 @@ GraphQL Node.js Apollo Server Analyzer
 
 Detects Apollo Server patterns in JavaScript files and creates KB objects:
 
-  - NodeJsApolloSchema: inline typeDefs (const typeDefs = gql`type Query {...}`)
+  - JsNodeJsApolloSchema: inline typeDefs (const typeDefs = gql`type Query {...}`)
     Created only in files that import an Apollo Server package.
 
-  - NodeJsResolver: one resolver function per field
+  - JsNodeJsResolver{Query,Mutation,Subscription,Custom}: one resolver function per field
     (const resolvers = { Query: { users: ... }, Mutation: { createUser: ... } })
     Created in ALL JS files — the resolver object pattern is self-selecting.
 
 Architecture (mirrors graphql_javascript_analyzer.py):
   Phase 0 (start_javascript_content): collect all jsContent objects
-  Phase 1 (end_javascript_contents): typeDefs → NodeJsApolloSchema (server files only)
-  Phase 2 (end_javascript_contents): resolvers → NodeJsResolver (all JS files)
+  Phase 1 (end_javascript_contents): typeDefs → JsNodeJsApolloSchema (server files only)
+  Phase 2 (end_javascript_contents): resolvers → JsNodeJsResolver* (all JS files)
 
 Links are created in graphql_application_level.py:
-  GraphQLField -callLink-> NodeJsResolver  (matched by operationType + fieldName)
+  GraphQLField -callLink-> JsNodeJsResolver*  (matched by operationType + fieldName)
 """
 
 import re
-from cast.analysers import ua, log, CustomObject, create_link
+from cast.analysers import ua, log, CustomObject, create_link, Bookmark
 from cast import Event
 
 
@@ -44,8 +44,28 @@ _APOLLO_SERVER_PACKAGES = frozenset({
 # GraphQL operation type sections found inside resolver maps
 _OPERATION_TYPES = ('Query', 'Mutation', 'Subscription')
 
+# Map operation type → JS KB type name
+_OPERATION_TYPE_TO_JS_TYPE = {
+    'Query':        'JsNodeJsResolverQuery',
+    'Mutation':     'JsNodeJsResolverMutation',
+    'Subscription': 'JsNodeJsResolverSubscription',
+}
+
 # Special resolver keys that are meta-resolvers, not field resolvers
 _SKIP_FIELD_NAMES = frozenset({'__resolveType', '__isTypeOf', 'subscribe'})
+
+# Built-in GraphQL scalars and meta-keys that are NOT custom type resolvers
+_BUILTIN_GRAPHQL_NAMES = frozenset({
+    'Query', 'Mutation', 'Subscription',
+    'String', 'Int', 'Float', 'Boolean', 'ID',
+    'Date', 'DateTime', 'JSON', 'Upload',
+})
+
+# Regex to extract service call from JS resolver body: ctx.serviceName.methodName(
+_JS_SERVICE_CALL_RE = re.compile(r'ctx\.(\w+)\.(\w+)\s*\(')
+
+# Regex to extract context key → class mapping: key: new ClassName(  or  key = new ClassName(
+_CONTEXT_KEY_TO_CLASS_RE = re.compile(r'(\w+)\s*[:=]\s*new\s+(\w+)\s*\(')
 
 # Variable names that typically carry the Apollo Server typeDefs
 _TYPEDEFS_VAR_NAMES = frozenset({'typedefs', 'type_defs', 'types', 'schema'})
@@ -97,6 +117,7 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
         self._server_contents = []   # subset: files that import ApolloServer
         self._created = 0
         self._failed  = 0
+        self._context_key_to_class = {}  # e.g. {"interestService": "InterestService"}
 
     # ──────────────────────────────────────────── event handlers ──────────────
 
@@ -114,12 +135,23 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
 
     @Event('com.castsoftware.html5', 'end_javascript_contents')
     def _on_end(self):
-        """Two-phase extraction: typeDefs then resolvers."""
+        """Three-phase extraction: context mapping, typeDefs, then resolvers."""
         log.info('[GraphQL NodeJs] Analyzing '
                  + str(len(self._all_contents)) + ' JS file(s), '
                  + str(len(self._server_contents)) + ' server file(s)')
 
-        # Phase 1 — typeDefs → NodeJsApolloSchema (all files; variable-name filter is the guard)
+        # Phase 0 — scan all files for context key → class bindings (new ClassName())
+        for jsc in self._all_contents:
+            try:
+                self._extract_context_key_bindings(jsc)
+            except Exception as e:
+                log.warning('[GraphQL NodeJs] Phase 0 error in '
+                            + str(jsc.get_file()) + ': ' + str(e))
+        if self._context_key_to_class:
+            log.info('[GraphQL NodeJs] Context key→class map: '
+                     + str(len(self._context_key_to_class)) + ' entries')
+
+        # Phase 1 — typeDefs → JsNodeJsApolloSchema (all files; variable-name filter is the guard)
         for jsc in self._all_contents:
             try:
                 self._extract_typedefs(jsc)
@@ -127,7 +159,7 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
                 log.warning('[GraphQL NodeJs] Phase 1 error in '
                             + str(jsc.get_file()) + ': ' + str(e))
 
-        # Phase 2 — resolver maps → NodeJsResolver (all JS files)
+        # Phase 2 — resolver maps → JsNodeJsResolver* (all JS files)
         for jsc in self._all_contents:
             try:
                 self._extract_resolvers(jsc)
@@ -225,7 +257,7 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
     def _extract_typedefs(self, jsContent):
         """
         Detect  const typeDefs = gql`type Query {...}`  in server files.
-        Creates one NodeJsApolloSchema KB object per typeDefs assignment.
+        Creates one JsNodeJsApolloSchema KB object per typeDefs assignment.
 
         readFileSync-based schemas are already parsed from .graphql SDL files
         by graphql_analyser_level.py, so they are intentionally skipped here.
@@ -272,7 +304,7 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
         return None
 
     def _create_apollo_schema(self, var_name, ast_node, jsContent):
-        """Create a NodeJsApolloSchema KB object for an inline typeDefs."""
+        """Create a JsNodeJsApolloSchema KB object for an inline typeDefs."""
         try:
             parent_kb = jsContent.get_kb_object()
             if parent_kb is None:
@@ -281,7 +313,7 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
 
             obj = CustomObject()
             obj.set_name(var_name)
-            obj.set_type('NodeJsApolloSchema')
+            obj.set_type('JsNodeJsApolloSchema')
             obj.set_parent(parent_kb)
             obj.save()
 
@@ -292,13 +324,48 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
                          + var_name + '": ' + str(bm_e))
 
             self._created += 1
-            log.info('[GraphQL NodeJs] Created NodeJsApolloSchema: ' + var_name
+            log.info('[GraphQL NodeJs] Created JsNodeJsApolloSchema: ' + var_name
                      + ' in ' + str(jsContent.get_file()))
 
         except Exception as e:
-            log.warning('[GraphQL NodeJs] Failed NodeJsApolloSchema "'
+            log.warning('[GraphQL NodeJs] Failed JsNodeJsApolloSchema "'
                         + var_name + '": ' + str(e))
             self._failed += 1
+
+    # ──────────────────────────────── Phase 0: context key → class mapping ────
+
+    def _extract_context_key_bindings(self, jsContent):
+        """
+        Scan for  key: new ClassName(  or  key = new ClassName(  patterns.
+
+        Populates self._context_key_to_class so that resolver service extraction
+        can resolve  ctx.interestService.findAll()  →  serviceClass=InterestService.
+        """
+        try:
+            source_text = self._get_source_text(jsContent)
+            if not source_text:
+                return
+            for m in _CONTEXT_KEY_TO_CLASS_RE.finditer(source_text):
+                key, cls = m.group(1), m.group(2)
+                if key not in self._context_key_to_class:
+                    self._context_key_to_class[key] = cls
+        except Exception as e:
+            log.info('[GraphQL NodeJs] context key scan error: ' + str(e))
+
+    def _get_source_text(self, jsContent):
+        """Extract raw source text from a jsContent object."""
+        try:
+            source_file = jsContent.get_file()
+            if source_file and hasattr(source_file, 'get_path'):
+                path = str(source_file.get_path())
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                        return f.read()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return None
 
     # ──────────────────────────────────────────── Phase 2: resolvers ───────────
 
@@ -308,27 +375,32 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
 
           { Query: { fieldName: (parent, args, ctx) => {...} },
             Mutation: { createX: async (...) => {...} },
-            Subscription: { eventX: { subscribe: ... } } }
+            Subscription: { eventX: { subscribe: ... } },
+            User: { posts: (parent, args, ctx) => {...} } }
 
-        Creates one NodeJsResolver KB object per resolver field name + op type.
+        Creates one JsNodeJsResolver* KB object per resolver field + op type.
+        Handles both standard operation types (Query/Mutation/Subscription) and
+        custom field resolvers (any other PascalCase key with object-valued properties).
         Deduplication is done within the file by (op_type, field_name).
         """
-        found = []   # list of (op_type, field_name, key_ast_node)
+        found = []   # list of (op_type, field_name, key_ast_node, value_node)
 
         def visit(node):
             if not _is_object_value(node):
                 return
+            has_standard_type = False
             for op_type in _OPERATION_TYPES:
                 try:
                     type_section = node.get_item(op_type)
                     if type_section is None:
                         continue
+                    has_standard_type = True
                     if not _is_object_value(type_section):
                         continue
                     items_dict = type_section.get_items_dictionary()
                     if not items_dict:
                         continue
-                    for key_ident, _value_node in items_dict.items():
+                    for key_ident, value_node in items_dict.items():
                         try:
                             field_name = (key_ident.get_name()
                                           if hasattr(key_ident, 'get_name')
@@ -336,9 +408,49 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
                             if (field_name
                                     and field_name not in _SKIP_FIELD_NAMES
                                     and field_name != 'unknown'):
-                                found.append((op_type, field_name, key_ident))
+                                found.append((op_type, field_name, key_ident, value_node))
                         except Exception:
                             pass
+                except Exception:
+                    pass
+
+            # Custom field resolvers: any PascalCase key that is NOT a standard type
+            # and contains object-valued properties (field resolvers).
+            # Only scan objects that already have at least one standard type (Query/Mutation/Subscription)
+            # to avoid false positives on arbitrary JS objects.
+            if has_standard_type:
+                try:
+                    items_dict = node.get_items_dictionary()
+                    if items_dict:
+                        for key_ident, value_node in items_dict.items():
+                            try:
+                                type_name = (key_ident.get_name()
+                                             if hasattr(key_ident, 'get_name')
+                                             else str(key_ident))
+                                if (not type_name
+                                        or type_name in _BUILTIN_GRAPHQL_NAMES
+                                        or type_name == 'unknown'
+                                        or not type_name[0].isupper()):
+                                    continue
+                                if not _is_object_value(value_node):
+                                    continue
+                                inner_dict = value_node.get_items_dictionary()
+                                if not inner_dict:
+                                    continue
+                                for field_key, field_val in inner_dict.items():
+                                    try:
+                                        field_name = (field_key.get_name()
+                                                      if hasattr(field_key, 'get_name')
+                                                      else str(field_key))
+                                        if (field_name
+                                                and field_name not in _SKIP_FIELD_NAMES
+                                                and field_name != 'unknown'):
+                                            found.append((type_name, field_name,
+                                                          field_key, field_val))
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
@@ -349,23 +461,48 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
 
         # Dedup within file: keep first occurrence of each (op_type, field_name)
         seen = set()
-        for op_type, field_name, key_node in found:
+        for op_type, field_name, key_node, value_node in found:
             pair = (op_type, field_name)
             if pair not in seen:
                 seen.add(pair)
-                self._create_resolver(op_type, field_name, key_node, jsContent)
+                self._create_resolver(op_type, field_name, key_node,
+                                      value_node, jsContent)
 
-    def _create_resolver(self, op_type, field_name, ast_node, jsContent):
-        """Create a NodeJsResolver KB object for one resolver function."""
+    def _extract_service_call(self, value_node):
+        """
+        Extract (serviceClass, serviceMethod) from a resolver function body.
+
+        For JS resolvers, looks for  ctx.serviceName.methodName(  patterns.
+        Resolves the context key to a class name via self._context_key_to_class.
+
+        Returns (serviceClass, serviceMethod) or (None, None).
+        """
+        try:
+            body_text = str(value_node)
+            m = _JS_SERVICE_CALL_RE.search(body_text)
+            if m:
+                ctx_key = m.group(1)
+                method = m.group(2)
+                cls = self._context_key_to_class.get(ctx_key, ctx_key)
+                return (cls, method)
+        except Exception:
+            pass
+        return (None, None)
+
+    def _create_resolver(self, op_type, field_name, ast_node, value_node, jsContent):
+        """Create a JsNodeJsResolver* KB object for one resolver function."""
         try:
             parent_kb = jsContent.get_kb_object()
             if parent_kb is None:
                 self._failed += 1
                 return
 
+            # Determine the correct KB type
+            resolver_type = _OPERATION_TYPE_TO_JS_TYPE.get(op_type, 'JsNodeJsResolverCustom')
+
             obj = CustomObject()
             obj.set_name(field_name)
-            obj.set_type('NodeJsResolver')
+            obj.set_type(resolver_type)
             obj.set_parent(parent_kb)
             obj.save()
 
@@ -378,11 +515,20 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
             obj.save_property('GraphQL_NodeJs_Resolver.operationType', op_type)
             obj.save_property('GraphQL_NodeJs_Resolver.fieldName', field_name)
 
+            # Extract service call info from resolver body
+            service_class, service_method = self._extract_service_call(value_node)
+            if service_class:
+                obj.save_property('GraphQL_NodeJs_Resolver.serviceClass', service_class)
+            if service_method:
+                obj.save_property('GraphQL_NodeJs_Resolver.serviceMethod', service_method)
+
             self._created += 1
-            log.info('[GraphQL NodeJs] Created NodeJsResolver: '
-                     + op_type + '.' + field_name)
+            log.info('[GraphQL NodeJs] Created ' + resolver_type + ': '
+                     + op_type + '.' + field_name
+                     + (' → ' + str(service_class) + '.' + str(service_method)
+                        if service_class else ''))
 
         except Exception as e:
-            log.warning('[GraphQL NodeJs] Failed NodeJsResolver "'
+            log.warning('[GraphQL NodeJs] Failed resolver "'
                         + op_type + '.' + field_name + '": ' + str(e))
             self._failed += 1

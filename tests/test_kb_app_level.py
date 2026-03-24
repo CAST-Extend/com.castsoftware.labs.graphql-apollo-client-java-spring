@@ -61,10 +61,18 @@ class TestLocalKb(unittest.TestCase):
         print("engine = {}".format(engine))
         server = Server(engine)
         print("server = {}".format(server))
-        kb = server.get_schema('testtsgql_local')
-        application = kb.get_application('TestTSgql')
+        kb = server.get_schema('bigapptest6_local')
+        application = kb.get_application('BigAppTest6')
         print("type(app) = {}".format(type(application)))
-        gql_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGqlQuery', 'JsGqlQuery'))
+
+        # All 8 resolver type names (TS + JS)
+        _RESOLVER_TYPES = frozenset({
+            'TsNodeJsResolverQuery', 'TsNodeJsResolverMutation',
+            'TsNodeJsResolverSubscription', 'TsNodeJsResolverCustom',
+            'JsNodeJsResolverQuery', 'JsNodeJsResolverMutation',
+            'JsNodeJsResolverSubscription', 'JsNodeJsResolverCustom',
+        })
+        resolvers = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in _RESOLVER_TYPES)
         gql_mutations = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGqlMutation', 'JsGqlMutation'))
         # gql_subs = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGqlSubscription', 'JsGqlSubscription'))
         # hook_queries = list(obj for obj in application.search_objects(load_properties=True) if obj.get_type() in ('TsGraphQLApolloHookQuery', 'JsGraphQLApolloHookQuery'))
