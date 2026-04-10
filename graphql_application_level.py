@@ -31,7 +31,7 @@ Python 3.4+ compatible.
 
 import cast_upgrade_1_6_23  # noqa: F401 - Required for CAST SDK compatibility
 from cast.application import ApplicationLevelExtension, ReferenceFinder, create_link
-from cast.application import open_source_fil`e
+from cast.application import open_source_file, CustomObject
 from logging import info, debug, warning
 import traceback
 
@@ -57,45 +57,53 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
     - ReferenceFinder: Find references to strings in the knowledge base
     """
     
-    def end_application(self, application):
+    def end_application_create_objects(self, application):
         """
-        Called once after all analyzer-level extensions have completed.
-        
-        This is the entry point for application-level processing.
-        Creates cross-technology links between GraphQL client operations,
-        Java backend methods, and GraphQL schema objects.
-        
-        Links created:
-        1. Client → Schema (USE links):
-           - TsGqlQuery / JsGqlQuery → GraphQLField (Query)
-           - TsGqlMutation / JsGqlMutation → GraphQLField (Mutation)
-           - TsGqlSubscription / JsGqlSubscription → GraphQLField (Subscription)
-           
-        2. Schema → Backend (CALL links):
-           - GraphQLField → JV_METHOD (annotated Java methods)
-        
-        Args:
-            application: CAST Application object containing all analyzed objects
+        Called before end_application. Creates CustomObject stubs for:
+        1. Resolver calls that could not be matched to a real service method.
+        2. Schema fields referenced by client objects but not found in the schema.
+
+        CAST only allows CustomObject creation during this phase, not during
+        end_application where links are created.
         """
+        self._resolver_link_targets = {}  # resolver_fullname → target KB obj (real or unresolved)
+        self._unresolved_schema_fields = {}  # field_name → UnresolvedSchemaField CustomObject
+        self._schema_resolver_stubs = {}    # (op_type, field_name, 'ts'|'js') → Unresolved* CustomObject
+        try:
+            self._build_resolver_link_targets(application)
+        except Exception as e:
+            warning('[GraphQL Application] Error in end_application_create_objects (resolvers): ' + str(e))
+            debug('[GraphQL Application] ' + traceback.format_exc())
+        try:
+            self._build_unresolved_schema_fields(application)
+        except Exception as e:
+            warning('[GraphQL Application] Error in end_application_create_objects (schema fields): ' + str(e))
+            debug('[GraphQL Application] ' + traceback.format_exc())
+        # Links to custom objects (UnresolvedSchemaField) MUST be created here, not in end_application.
+        # CAST only allows create_link on custom objects during end_application_create_objects.
+        try:
+            self._link_client_to_unresolved_fields(application)
+        except Exception as e:
+            warning('[GraphQL Application] Error in end_application_create_objects (unresolved links): ' + str(e))
+            debug('[GraphQL Application] ' + traceback.format_exc())
+        try:
+            self._build_schema_resolver_stubs(application)
+        except Exception as e:
+            warning('[GraphQL Application] Error in end_application_create_objects (resolver stubs): ' + str(e))
+            debug('[GraphQL Application] ' + traceback.format_exc())
+        # All create_link calls must also happen here (not in end_application), per CAST API rules.
+        # Order matters: link methods that depend on _build_* dicts come after those builds above.
         try:
             info('[GraphQL Application] Starting cross-technology link creation')
-
-            # Create links between client operations and schema objects
             self._link_client_to_schema(application)
-
-            # Create links from schema to Java backend methods
             self._link_schema_to_backend(application)
-
-            # Create links from schema to Node.js resolver functions
+            # _link_schema_to_nodejs_resolvers uses _schema_resolver_stubs (built above)
             self._link_schema_to_nodejs_resolvers(application)
-
-            # Create links from Node.js resolvers to service methods
+            # _link_resolvers_to_services uses _resolver_link_targets (built by _build_resolver_link_targets above)
             self._link_resolvers_to_services(application)
-
             info('[GraphQL Application] Cross-technology link creation complete')
-            
         except Exception as e:
-            warning('[GraphQL Application] Error in end_application: ' + str(e))
+            warning('[GraphQL Application] Error in end_application_create_objects (links): ' + str(e))
             debug('[GraphQL Application] ' + traceback.format_exc())
     
     def _get_parent(self, obj, application):
@@ -238,7 +246,9 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
             Number of links created
 
         Note:
-            The fieldsSelected property is stored as a comma-separated string
+            The fieldsSelected property is stored as a comma-separated string.
+            Unresolved field placeholders are pre-created in end_application_create_objects
+            and stored in self._unresolved_schema_fields.
         """
         links_created = 0
 
@@ -261,7 +271,10 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                     create_link('useLink', client_obj, schema_obj)
                     links_created += 1
                 else:
-                    warning('[GraphQL Application] Field not found in schema: "' + field_name + '"')
+                    # Links to UnresolvedSchemaField are created in end_application_create_objects
+                    # (_link_client_to_unresolved_fields), not here, because CAST requires
+                    # create_link on custom objects to happen during that phase.
+                    debug('[GraphQL Application] Field not in schema (handled as unresolved): "' + field_name + '"')
 
         except Exception as e:
             warning('[GraphQL Application] Error linking: ' + str(e))
@@ -507,7 +520,9 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                 if field_obj.get_type() == 'GraphQLField':
                     fields_dict[field_obj.get_name()] = field_obj
             if fields_dict:
-                schema_fields_by_type[type_name] = fields_dict
+                if type_name not in schema_fields_by_type:
+                    schema_fields_by_type[type_name] = {}
+                schema_fields_by_type[type_name].update(fields_dict)
 
         total_fields = sum(len(v) for v in schema_fields_by_type.values())
         info('[GraphQL Application] Schema index: '
@@ -549,6 +564,21 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                         + str(resolver_obj.get_name()) + '": ' + str(e))
                 debug('[GraphQL Application] ' + traceback.format_exc())
 
+        # Create callLinks from schema fields to their Unresolved resolver stubs
+        # (pre-built in end_application_create_objects for fields with no matching resolver)
+        stubs_linked = 0
+        schema_resolver_stubs = getattr(self, '_schema_resolver_stubs', {})
+        for stub_key, stub_obj in schema_resolver_stubs.items():
+            op_type, field_name = stub_key[0], stub_key[1]
+            type_fields = schema_fields_by_type.get(op_type, {})
+            if field_name in type_fields:
+                try:
+                    create_link('callLink', type_fields[field_name], stub_obj)
+                    stubs_linked += 1
+                except Exception as e:
+                    warning('[GraphQL Application] Error linking schema field to unresolved resolver "'
+                            + op_type + '.' + field_name + '": ' + str(e))
+
         info('[GraphQL Application] ========================================')
         info('[GraphQL Application] SCHEMA-NODEJS LINKING SUMMARY: Created '
              + str(links_created) + ' CALL links')
@@ -557,109 +587,446 @@ class GraphQLApplicationLevel(ApplicationLevelExtension):
                  + str(count) + ' linked')
         info('[GraphQL Application]   - Not matched: '
              + str(not_matched) + ' (no corresponding GraphQLField found)')
+        if stubs_linked:
+            info('[GraphQL Application]   - Unresolved resolver stubs linked: '
+                 + str(stubs_linked))
         info('[GraphQL Application] ========================================')
+
+    def _link_client_to_unresolved_fields(self, application):
+        """
+        Called from end_application_create_objects, AFTER _build_unresolved_schema_fields.
+
+        Creates useLink from each client GQL definition to its UnresolvedSchemaField stubs.
+        Must run here (not in end_application) because CAST only allows create_link on
+        custom objects during end_application_create_objects.
+        """
+        if not self._unresolved_schema_fields:
+            return
+
+        _CLIENT_TYPES = {
+            'TsGqlQuery', 'JsGqlQuery',
+            'TsGqlMutation', 'JsGqlMutation',
+            'TsGqlSubscription', 'JsGqlSubscription',
+        }
+
+        links_created = 0
+        for obj in (application.objects()
+                    .has_type(list(_CLIENT_TYPES))
+                    .load_property('GraphQL_Client_Definition.fieldsSelected')):
+            raw = obj.get_property('GraphQL_Client_Definition.fieldsSelected')
+            if not raw:
+                continue
+            for field_name in [f.strip() for f in raw.split(',')]:
+                placeholder = self._unresolved_schema_fields.get(field_name)
+                if placeholder is not None:
+                    try:
+                        create_link('useLink', obj, placeholder)
+                        links_created += 1
+                    except Exception as e:
+                        warning('[GraphQL Application] create_link FAILED for UnresolvedSchemaField "'
+                                + field_name + '": ' + str(e))
+
+        info('[GraphQL Application] Created ' + str(links_created)
+             + ' useLink(s) to UnresolvedSchemaField stubs')
+
+    def _build_unresolved_schema_fields(self, application):
+        """
+        Called from end_application_create_objects.
+
+        Builds self._unresolved_schema_fields = {field_name → UnresolvedSchemaField CustomObject}
+        for every field referenced by a client object (via fieldsSelected) that is not
+        present in the GraphQL schema.
+
+        CustomObject.save() is only valid during end_application_create_objects.
+        """
+        _CLIENT_TYPES = {
+            'TsGqlQuery', 'JsGqlQuery',
+            'TsGqlMutation', 'JsGqlMutation',
+            'TsGqlSubscription', 'JsGqlSubscription',
+        }
+
+        # Build schema field name set
+        schema_field_names = set()
+        for type_obj in application.get_objects():
+            if type_obj.get_type() != 'GraphQLType':
+                continue
+            type_name = type_obj.get_name()
+            if type_name not in ('Query', 'Mutation', 'Subscription'):
+                continue
+            type_obj.load_children()
+            for field_obj in type_obj.get_children():
+                if field_obj.get_type() == 'GraphQLField':
+                    schema_field_names.add(field_obj.get_name())
+
+        # Collect all missing field names across all client objects,
+        # tracking the first referencing client object per field (to derive its source file).
+        missing_field_first_obj = {}  # field_name → first client KB obj that references it
+        for obj in (application.objects()
+                    .has_type(list(_CLIENT_TYPES))
+                    .load_property('GraphQL_Client_Definition.fieldsSelected')
+                    .load_positions()):
+            raw = obj.get_property('GraphQL_Client_Definition.fieldsSelected')
+            if not raw:
+                continue
+            fields = [f.strip() for f in raw.split(',')]
+            for field_name in fields:
+                if field_name and field_name not in schema_field_names:
+                    if field_name not in missing_field_first_obj:
+                        missing_field_first_obj[field_name] = obj
+
+        # Create one UnresolvedSchemaField CustomObject per missing field name.
+        # Parent = source file of the first client object that references the field.
+        # set_fullname() is called explicitly to avoid a crash when file.get_fullname() is None.
+        for field_name, ref_obj in missing_field_first_obj.items():
+            try:
+                parent = None
+                try:
+                    positions = ref_obj.get_positions()
+                    if positions:
+                        parent = positions[0].file
+                except Exception:
+                    pass
+                unresolved_obj = CustomObject()
+                unresolved_obj.set_name(field_name)
+                unresolved_obj.set_type('UnresolvedSchemaField')
+                if parent is not None:
+                    file_fn = parent.get_fullname() or str(parent.get_path())
+                    if file_fn:
+                        unresolved_obj.set_fullname(file_fn + '.' + field_name)
+                    unresolved_obj.set_parent(parent)
+                unresolved_obj.save()
+                try:
+                    if parent is not None and positions:
+                        p = positions[0]
+                        p.end_line = p.begin_line
+                        unresolved_obj.save_position(p)
+                except Exception:
+                    pass
+                self._unresolved_schema_fields[field_name] = unresolved_obj
+                debug('[GraphQL Application] Created UnresolvedSchemaField: ' + field_name)
+            except Exception as e:
+                warning('[GraphQL Application] Could not create UnresolvedSchemaField "'
+                        + field_name + '": ' + str(e))
+
+        if self._unresolved_schema_fields:
+            info('[GraphQL Application] Created ' + str(len(self._unresolved_schema_fields))
+                 + ' UnresolvedSchemaField stub(s)')
+
+    def _build_schema_resolver_stubs(self, application):
+        """
+        Called from end_application_create_objects.
+
+        For each root schema field (Query/Mutation/Subscription) that has no matching
+        NodeJS resolver in the KB, creates a TsUnresolvedNodeJsResolver or
+        JsUnresolvedNodeJsResolver stub so that the link
+            GraphQLField -callLink-> Unresolved*NodeJsResolver
+        can be created in _link_schema_to_nodejs_resolvers.
+
+        Only runs when the application contains at least one NodeJS resolver (Ts or Js).
+        Ts and Js stubs are created independently: if the app has Ts resolvers but a
+        given field has no Ts resolver, a TsUnresolvedNodeJsResolver is created for that
+        field (same logic for Js).
+
+        Populates self._schema_resolver_stubs:
+            (op_type, field_name, 'ts'|'js') → CustomObject
+        """
+        _ROOT_TYPES = frozenset({'Query', 'Mutation', 'Subscription'})
+        _TS_RESOLVER_TYPES = frozenset(t for t in self._RESOLVER_TYPES if t.startswith('Ts'))
+        _JS_RESOLVER_TYPES = frozenset(t for t in self._RESOLVER_TYPES if t.startswith('Js'))
+
+        # Build matched sets and detect language presence in one pass
+        ts_matched = set()   # (op_type, field_name) covered by a Ts resolver
+        js_matched = set()   # (op_type, field_name) covered by a Js resolver
+        has_ts = False
+        has_js = False
+
+        for obj in (application.objects()
+                    .load_property('GraphQL_NodeJs_Resolver.operationType')
+                    .load_property('GraphQL_NodeJs_Resolver.fieldName')):
+            obj_type = obj.get_type()
+            op_type = obj.get_property('GraphQL_NodeJs_Resolver.operationType')
+            field_name = obj.get_property('GraphQL_NodeJs_Resolver.fieldName')
+            if not op_type or not field_name or op_type not in _ROOT_TYPES:
+                continue
+            if obj_type in _TS_RESOLVER_TYPES:
+                has_ts = True
+                ts_matched.add((op_type, field_name))
+            elif obj_type in _JS_RESOLVER_TYPES:
+                has_js = True
+                js_matched.add((op_type, field_name))
+
+        if not has_ts and not has_js:
+            return  # No NodeJS resolvers in this application — nothing to do
+
+        info('[GraphQL Application] Building schema resolver stubs '
+             '(has_ts=' + str(has_ts) + ', has_js=' + str(has_js) + ')')
+
+        # Iterate root schema fields and create stubs for any that are unmatched
+        stubs_created = 0
+        for type_obj in application.get_objects():
+            if type_obj.get_type() != 'GraphQLType':
+                continue
+            type_name = type_obj.get_name()
+            if type_name not in _ROOT_TYPES:
+                continue
+            type_obj.load_children()
+            for field_obj in type_obj.get_children():
+                if field_obj.get_type() != 'GraphQLField':
+                    continue
+                field_name = field_obj.get_name()
+
+                if has_ts and (type_name, field_name) not in ts_matched:
+                    try:
+                        stub = CustomObject()
+                        stub.set_name(field_name)
+                        stub.set_type('TsUnresolvedNodeJsResolver')
+                        # Use the schema file as parent (not field_obj) so that the
+                        # callLink from field_obj → stub is not a parent→child link,
+                        # which CAST Imaging would suppress from the callers view.
+                        field_positions = []
+                        try:
+                            field_positions = field_obj.get_positions() or []
+                        except Exception:
+                            pass
+                        stub_parent = field_positions[0].file if field_positions else type_obj
+                        stub.set_parent(stub_parent)
+                        stub.save()
+                        try:
+                            if field_positions:
+                                fp = field_positions[0]
+                                stub.save_position(fp)
+                        except Exception:
+                            pass
+                        self._schema_resolver_stubs[(type_name, field_name, 'ts')] = stub
+                        stubs_created += 1
+                    except Exception as e:
+                        warning('[GraphQL Application] Could not create TsUnresolvedNodeJsResolver for "'
+                                + type_name + '.' + field_name + '": ' + str(e))
+
+                if has_js and (type_name, field_name) not in js_matched:
+                    try:
+                        stub = CustomObject()
+                        stub.set_name(field_name)
+                        stub.set_type('JsUnresolvedNodeJsResolver')
+                        field_positions = []
+                        try:
+                            field_positions = field_obj.get_positions() or []
+                        except Exception:
+                            pass
+                        stub_parent = field_positions[0].file if field_positions else type_obj
+                        stub.set_parent(stub_parent)
+                        stub.save()
+                        try:
+                            if field_positions:
+                                fp = field_positions[0]
+                                stub.save_position(fp)
+                        except Exception:
+                            pass
+                        self._schema_resolver_stubs[(type_name, field_name, 'js')] = stub
+                        stubs_created += 1
+                    except Exception as e:
+                        warning('[GraphQL Application] Could not create JsUnresolvedNodeJsResolver for "'
+                                + type_name + '.' + field_name + '": ' + str(e))
+
+        if stubs_created:
+            info('[GraphQL Application] Created ' + str(stubs_created)
+                 + ' Unresolved NodeJS resolver stub(s)')
+
+    def _build_resolver_link_targets(self, application):
+        """
+        Called from end_application_create_objects.
+
+        Builds self._resolver_link_targets = {resolver_fullname → target_obj},
+        where target_obj is either a real service KB object or a freshly created
+        CustomObject (TsUnresolvedServiceMethod / JsUnresolvedServiceMethod).
+        CustomObject.save() is only valid during end_application_create_objects.
+        """
+        # Build method index: (file_path, class_name_or_None, method_name, index) → KB object
+        method_index = {}
+        _obj_literal_counters = {}
+        for obj in application.objects().load_positions():
+            try:
+                obj_type = obj.get_type()
+                if obj_type not in self._SERVICE_METHOD_TYPES:
+                    continue
+                method_name = obj.get_name()
+                if not method_name:
+                    continue
+                positions = obj.get_positions()
+                if not positions:
+                    continue
+                file_path = str(positions[0].file.get_path())
+                fullname = obj.get_fullname() or ''
+                parts = fullname.split('.')
+                candidate = parts[-2] if len(parts) >= 2 else ''
+                class_name = candidate if (candidate and candidate[0].isupper()) else None
+                if class_name is not None:
+                    index = 0
+                else:
+                    counter_key = (file_path, method_name)
+                    _obj_literal_counters[counter_key] = (
+                        _obj_literal_counters.get(counter_key, 0) + 1)
+                    index = _obj_literal_counters[counter_key]
+                key = (file_path, class_name, method_name, index)
+                if key not in method_index:
+                    method_index[key] = obj
+            except Exception:
+                pass
+
+        info('[GraphQL Application] Service method index: '
+             + str(len(method_index)) + ' entries (built in create_objects phase)')
+
+        _resolver_query = (application.objects()
+                           .load_property('GraphQL_NodeJs_Resolver.serviceFilePath')
+                           .load_property('GraphQL_NodeJs_Resolver.serviceMethod')
+                           .load_property('GraphQL_NodeJs_Resolver.serviceClass')
+                           .load_positions())
+        _diag_total = 0
+        _diag_no_service = 0
+        for obj in _resolver_query:
+            try:
+                if obj.get_type() not in self._RESOLVER_TYPES:
+                    continue
+                _diag_total += 1
+                resolver_fullname = obj.get_fullname()
+                service_file_path = obj.get_property('GraphQL_NodeJs_Resolver.serviceFilePath')
+                service_method = obj.get_property('GraphQL_NodeJs_Resolver.serviceMethod')
+                if not service_method:
+                    _diag_no_service += 1
+                    continue
+                service_class = obj.get_property('GraphQL_NodeJs_Resolver.serviceClass')
+
+                # Attempt 1: class-based match (with known file path)
+                target_obj = None
+                if service_file_path and service_class:
+                    target_obj = method_index.get(
+                        (service_file_path, service_class, service_method, 0))
+
+                # Attempt 2: object-literal fallback (only if unambiguous)
+                if target_obj is None and service_file_path:
+                    ol_count = _obj_literal_counters.get(
+                        (service_file_path, service_method), 0)
+                    if ol_count == 1:
+                        target_obj = method_index.get(
+                            (service_file_path, None, service_method, 1))
+
+                # Attempt 3: global search by class+method when file path is
+                # unknown (e.g. JS resolvers using context-injected services
+                # that are not imported — no serviceFilePath available).
+                # Case-insensitive on class name: JS resolvers store camelCase
+                # context keys (e.g. "userService") while method_index has
+                # PascalCase class names (e.g. "UserService").
+                if target_obj is None and not service_file_path and service_class:
+                    sc_lower = service_class.lower()
+                    for key, candidate in method_index.items():
+                        if key[1] and key[1].lower() == sc_lower and key[2] == service_method:
+                            target_obj = candidate
+                            break
+
+                if target_obj is None:
+                    # Create unresolved placeholder — allowed here in create_objects phase
+                    type_prefix = 'Ts' if obj.get_type().startswith('Ts') else 'Js'
+                    unresolved_type = type_prefix + 'UnresolvedServiceMethod'
+                    if service_class:
+                        instance_name = service_class[0].lower() + service_class[1:]
+                        unresolved_name = instance_name + '.' + service_method
+                    else:
+                        unresolved_name = service_method
+                    try:
+                        unresolved_obj = CustomObject()
+                        unresolved_obj.set_name(unresolved_name)
+                        unresolved_obj.set_type(unresolved_type)
+                        # Use the resolver's source file as parent (not the resolver itself)
+                        # so that callLink from resolver → stub is not a parent→child link,
+                        # which CAST Imaging would suppress from the callers view.
+                        resolver_positions = []
+                        try:
+                            resolver_positions = obj.get_positions() or []
+                        except Exception:
+                            pass
+                        stub_parent = None
+                        if resolver_positions:
+                            try:
+                                f = resolver_positions[0].file
+                                if f is not None and f.get_fullname() is not None:
+                                    stub_parent = f
+                            except Exception:
+                                pass
+                        if stub_parent is None and obj.get_fullname() is not None:
+                            stub_parent = obj
+                        if stub_parent is None:
+                            warning('[GraphQL Application] Skipping unresolved object "'
+                                    + unresolved_name + '": no valid parent with fullname')
+                            continue
+                        unresolved_obj.set_parent(stub_parent)
+                        unresolved_obj.save()
+                        try:
+                            if resolver_positions:
+                                rp = resolver_positions[0]
+                                unresolved_obj.save_position(rp)
+                        except Exception:
+                            pass
+                        target_obj = unresolved_obj
+                    except Exception as e:
+                        warning('[GraphQL Application] Could not create unresolved object "'
+                                + unresolved_name + '": ' + str(e))
+
+                if target_obj is not None:
+                    self._resolver_link_targets[resolver_fullname] = target_obj
+
+            except Exception as e:
+                warning('[GraphQL Application] Error building resolver link target: ' + str(e))
+
+        info('[GraphQL Application] build_resolver_link_targets: '
+             + str(_diag_total) + ' resolver(s) seen, '
+             + str(_diag_no_service) + ' skipped (no serviceFilePath/serviceMethod), '
+             + str(len(self._resolver_link_targets)) + ' stored in _resolver_link_targets')
 
     def _link_resolvers_to_services(self, application):
         """
-        Create CALL links from Node.js resolver functions to service methods.
-
-        For each resolver that has serviceClass + serviceMethod properties:
-          TsNodeJsResolverQuery "getUsers" (serviceClass=UserService, serviceMethod=findById)
-            → callLink → CAST_TS_Method "findById" (parent fullname contains "UserService")
-
-        Matching strategy: (class_name, method_name) → KB object, extracted from fullname.
-
-        Args:
-            application: CAST Application object
+        Create CALL links from Node.js resolver functions to service methods (or
+        their unresolved placeholders pre-created in end_application_create_objects).
         """
         info('[GraphQL Application] ========================================')
         info('[GraphQL Application] Starting resolver-to-service linking')
         info('[GraphQL Application] ========================================')
 
-        # Build method index: (class_name, method_name) → KB object
-        method_index = {}
-        for obj in application.search_objects(load_properties=True):
-            try:
-                obj_type = obj.get_type()
-                if obj_type not in self._SERVICE_METHOD_TYPES:
-                    continue
-                fullname = obj.get_fullname()
-                method_name = obj.get_name()
-                if not fullname or not method_name:
-                    continue
-                parts = fullname.split('.')
-                if len(parts) >= 2:
-                    class_name = parts[-2]
-                    key = (class_name, method_name)
-                    if key not in method_index:
-                        method_index[key] = obj
-            except Exception:
-                pass
-
-        info('[GraphQL Application] Service method index: '
-             + str(len(method_index)) + ' (class, method) entries')
-        for i, (key, obj) in enumerate(list(method_index.items())[:5]):
-            info('[GraphQL Application]   sample[' + str(i) + '] ' + str(key) + ' → ' + str(obj.get_fullname()))
-
-        if not method_index:
-            info('[GraphQL Application] No service methods found — skipping')
+        if not hasattr(self, '_resolver_link_targets'):
+            warning('[GraphQL Application] _resolver_link_targets not initialised — skipping')
             return
 
-        # Find all resolver objects and try to link to service methods
         links_created = 0
-        resolvers_with_service = 0
         not_matched = 0
-        properties_log_count = 0
 
-        for obj in application.search_objects(load_properties=True):
+        _resolver_query = (application.objects()
+                           .load_property('GraphQL_NodeJs_Resolver.serviceFilePath')
+                           .load_property('GraphQL_NodeJs_Resolver.serviceMethod')
+                           .load_positions())
+        for obj in _resolver_query:
             try:
                 if obj.get_type() not in self._RESOLVER_TYPES:
                     continue
-                service_class = obj.get_property(
-                    'GraphQL_NodeJs_Resolver.serviceClass')
-                service_method = obj.get_property(
-                    'GraphQL_NodeJs_Resolver.serviceMethod')
-                if properties_log_count < 5:
-                    info('[GraphQL Application]   resolver sample[' + str(properties_log_count) + '] '
-                         + str(obj.get_name()) + ' → serviceClass=' + str(service_class)
-                         + ', serviceMethod=' + str(service_method))
-                    properties_log_count += 1
-
-                if not service_class or not service_method:
-                    missing = []
-                    if not service_class:
-                        missing.append('serviceClass')
-                    if not service_method:
-                        missing.append('serviceMethod')
-                    try:
-                        file_name = obj.get_position().get_file().get_name()
-                    except Exception:
-                        file_name = '<unknown file>'
-                    warning('[GraphQL Application] Resolver "' + str(obj.get_name())
-                            + '" from "' + file_name + '" is missing propert'
-                            + ('ies: ' if len(missing) > 1 else 'y: ')
-                            + ', '.join(missing))
+                service_file_path = obj.get_property('GraphQL_NodeJs_Resolver.serviceFilePath')
+                service_method = obj.get_property('GraphQL_NodeJs_Resolver.serviceMethod')
+                if not service_file_path or not service_method:
+                    not_matched += 1
                     continue
 
-                resolvers_with_service += 1
-                key = (service_class, service_method)
-                if key in method_index:
-                    create_link('callLink', obj, method_index[key])
+                target_obj = self._resolver_link_targets.get(obj.get_fullname())
+                if target_obj is not None:
+                    create_link('callLink', obj, target_obj)
                     links_created += 1
                 else:
                     not_matched += 1
-                    debug('[GraphQL Application] Service not found: '
-                          + str(service_class) + '.' + str(service_method))
+                    debug('[GraphQL Application] No target for resolver: '
+                          + str(obj.get_fullname()))
 
             except Exception as e:
-                warning('[GraphQL Application] Error in resolver→service link: '
-                        + str(e))
+                warning('[GraphQL Application] Error in resolver→service link: ' + str(e))
 
         info('[GraphQL Application] ========================================')
         info('[GraphQL Application] RESOLVER-SERVICE LINKING SUMMARY: '
              + str(links_created) + ' CALL links created')
-        info('[GraphQL Application]   - Resolvers with service info: '
-             + str(resolvers_with_service))
-        info('[GraphQL Application]   - Service methods not found: '
+        info('[GraphQL Application]   - Service methods not found/missing: '
              + str(not_matched))
         info('[GraphQL Application] ========================================')

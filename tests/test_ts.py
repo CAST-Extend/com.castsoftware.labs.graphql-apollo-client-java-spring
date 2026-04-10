@@ -2710,18 +2710,19 @@ const resolvers = {
         print("_extract_brace_content: all assertions passed")
 
         # ─── 5. _extract_ts_service_call helper ───────────────────────────
-        # Normal case
-        cls, method = analyzer._extract_ts_service_call("return UserService.findAll(args);")
+        # Normal case — returns (class_name, method_name, service_file_path)
+        cls, method, path = analyzer._extract_ts_service_call("return UserService.findAll(args);")
         self.assertEqual(cls, 'UserService')
         self.assertEqual(method, 'findAll')
+        self.assertIsNone(path, "No file_path given → service_file_path should be None")
 
         # False positive: Promise.resolve filtered out
-        cls2, method2 = analyzer._extract_ts_service_call("return Promise.resolve(null);")
+        cls2, method2, path2 = analyzer._extract_ts_service_call("return Promise.resolve(null);")
         self.assertIsNone(cls2, "Promise should be filtered as false positive")
         self.assertIsNone(method2)
 
         # No service call
-        cls3, method3 = analyzer._extract_ts_service_call("return args.id;")
+        cls3, method3, path3 = analyzer._extract_ts_service_call("return args.id;")
         self.assertIsNone(cls3)
         self.assertIsNone(method3)
 
@@ -2738,6 +2739,159 @@ const resolvers = {
         print("\n" + "=" * 80)
         print("MODULE 14 — Resolver Detection: ALL ASSERTIONS PASSED")
         print("=" * 80)
+
+
+    # ════════════════════════════════════════════════════════════════════════
+    # MODULE 15 — archiveDocument serviceFilePath diagnostic
+    #
+    # Reproduces the multi-file scenario (resolver + service) exactly as
+    # get_typescript_file() + on_end_html5_and_typescript() would process them,
+    # but calls _extract_ts_service_call directly so it runs without a real KB.
+    #
+    # Bug observed in Imaging: archiveDocument logs
+    #   "missing property: serviceFilePath"
+    # meaning service_method='archive' is found but service_file_path=None,
+    # which implies class_name was NOT in import_map at resolution time.
+    # ════════════════════════════════════════════════════════════════════════
+
+    def test_ts_resolver_archive_document_15(self):
+        """
+        Module 15 — Diagnostic for archiveDocument / serviceFilePath extraction.
+
+        Simulates the multi-file processing loop:
+          for source_file in [resolver_sf, service_sf]:
+              analyzer.get_typescript_file(source_file)   # ← flow
+          analyzer.on_end_html5_and_typescript(None)
+
+        Then calls _extract_ts_service_call directly (bypassing the KB write
+        which requires a real CAST environment) to verify that:
+          (DocumentService, 'archive', <resolved_path_to_document.service.ts>)
+        is correctly extracted for the archiveDocument resolver field.
+        """
+        from graphql_typescript_analyzer import (
+            GraphQLTypeScriptAnalyzer,
+            _RESOLVER_SECTION_RE,
+            _RESOLVER_FIELD_RE,
+        )
+
+        # ── Paths ──────────────────────────────────────────────────────────
+        project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+        resolver_path = os.path.join(
+            project_root, 'big_app_test', 'server', 'ts', 'resolvers', 'document.resolver.ts')
+        service_path = os.path.join(
+            project_root, 'big_app_test', 'server', 'ts', 'services', 'document.service.ts')
+
+        self.assertTrue(os.path.exists(resolver_path),
+                        'document.resolver.ts not found at: ' + resolver_path)
+        self.assertTrue(os.path.exists(service_path),
+                        'document.service.ts not found at: ' + service_path)
+
+        # ── Step 1: parse both SourceFiles (mirrors the multi-file loop) ──
+        # In the real flow:
+        #   for source_file in all_ts_files:
+        #       analyzer.get_typescript_file(source_file)
+        # Here we create two SourceFile objects and light-parse them to
+        # demonstrate the same multi-file setup without needing the CAST KB.
+        resolver_sf = SourceFile(resolver_path)
+        service_sf  = SourceFile(service_path)
+        for sf in [resolver_sf, service_sf]:
+            sf.light_parse()
+
+        # ── Step 2: create analyzer instance ──────────────────────────────
+        analyzer = GraphQLTypeScriptAnalyzer()
+
+        # ── Step 3: read resolver source text ─────────────────────────────
+        with open(resolver_path, 'r', encoding='utf-8') as f:
+            resolver_source_text = f.read()
+
+        # ── Step 4: replicate what _extract_ts_resolvers does ─────────────
+        # Find the Mutation section, then locate the archiveDocument field,
+        # and extract the 500-char field_body exactly as the production code does.
+        field_body_for_archive = None
+        field_name_found = None
+
+        for section_match in _RESOLVER_SECTION_RE.finditer(resolver_source_text):
+            type_name = section_match.group(1)
+            if type_name != 'Mutation':
+                continue
+
+            brace_start = section_match.end() - 1   # position of '{' in source_text
+            brace_content = analyzer._extract_brace_content(resolver_source_text, brace_start)
+            if brace_content is None:
+                continue
+
+            for field_match in _RESOLVER_FIELD_RE.finditer(brace_content):
+                field_name = field_match.group(1)
+                if field_name != 'archiveDocument':
+                    continue
+                field_name_found = field_name
+                # Reproduce line-for-line from _extract_ts_resolvers:
+                field_body_start = brace_start + 1 + field_match.end()
+                field_body_for_archive = resolver_source_text[field_body_start:field_body_start + 500]
+                break
+
+            if field_body_for_archive is not None:
+                break
+
+        print('\n' + '=' * 70)
+        print('MODULE 15 — archiveDocument _extract_ts_service_call diagnostic')
+        print('=' * 70)
+        print('resolver_path :', resolver_path)
+        print('service_path  :', service_path)
+        print('service exists:', os.path.exists(service_path))
+        print()
+        print('field_name found in Mutation section:', field_name_found)
+        print('field_body[:300]:')
+        print(repr(field_body_for_archive[:300]) if field_body_for_archive else '*** NOT FOUND ***')
+        print()
+
+        self.assertIsNotNone(
+            field_body_for_archive,
+            'archiveDocument field body not extracted — check _RESOLVER_FIELD_RE / _RESOLVER_SECTION_RE')
+
+        # ── Step 5: call _extract_ts_service_call with full arguments ──────
+        # This is EXACTLY what _create_ts_resolver calls in production.
+        class_name, method_name, service_file_path = analyzer._extract_ts_service_call(
+            field_body_for_archive,
+            source_text=resolver_source_text,
+            file_path=resolver_path,
+        )
+
+        print('class_name       :', class_name)
+        print('method_name      :', method_name)
+        print('service_file_path:', service_file_path)
+        print()
+
+        # ── Step 6: simulate on_end (pending-link resolution) ─────────────
+        # In the real flow:  analyzer.on_end_html5_and_typescript(None)
+        # Here pending_links is empty (we never called _create_hook_object),
+        # so on_end would be a no-op.  We note it for completeness.
+        # analyzer.on_end_html5_and_typescript(None)  # needs real KB — skipped
+
+        # ── Assertions ────────────────────────────────────────────────────
+        self.assertEqual(
+            class_name, 'DocumentService',
+            'Pattern 2 (instanceVar.method) should map documentService → DocumentService '
+            '(via "const documentService = new DocumentService()" in resolver file)')
+
+        self.assertEqual(
+            method_name, 'archive',
+            'method_name should be "archive" from documentService.archive(id, reason)')
+
+        self.assertIsNotNone(
+            service_file_path,
+            'service_file_path must NOT be None — '
+            '"import { DocumentService } from \'../services/document.service\'" is in the file, '
+            'so DocumentService MUST be in import_map.  '
+            'If this fails, check import_map building in _extract_ts_service_call.')
+
+        # Bonus: confirm the resolved path points to the real service file
+        self.assertTrue(
+            os.path.exists(service_file_path),
+            'Resolved service_file_path does not exist on disk: ' + str(service_file_path))
+
+        print('MODULE 15 — ALL ASSERTIONS PASSED')
+        print('=' * 70)
 
 
 if __name__ == "__main__":

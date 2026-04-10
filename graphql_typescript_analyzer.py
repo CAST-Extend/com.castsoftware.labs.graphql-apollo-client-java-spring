@@ -19,6 +19,7 @@ LEVEL 2: Apollo hook calls (GraphQL*Request)
 """
 
 import re
+import os
 from cast.analysers import ua, log, CustomObject, Bookmark, create_link
 from cast import Event
 
@@ -51,11 +52,34 @@ _BUILTIN_GRAPHQL_NAMES = frozenset({
     'Date', 'DateTime', 'JSON', 'Upload',
 })
 
-# Special resolver keys to skip
-_SKIP_FIELD_NAMES = frozenset({'__resolveType', '__isTypeOf', 'subscribe'})
+# Special resolver keys to skip — includes middleware helpers that appear as function calls
+# inside resolver bodies and get falsely matched by _RESOLVER_FIELD_RE's identifier( alternative.
+_SKIP_FIELD_NAMES = frozenset({
+    '__resolveType', '__isTypeOf', 'subscribe',
+    # Apollo cache policy helpers (matched when files contain InMemoryCache type policies)
+    'merge', 'read', 'keyArgs',
+    # Common middleware / utility function calls that appear inside resolver bodies
+    'requireAuth', 'validateRole', 'validateMinimumRole',
+    'withFilter', 'publish', 'subscribe',
+})
 
 # Regex to extract service call from TS resolver body: ClassName.methodName(
-_TS_SERVICE_CALL_RE = re.compile(r'([A-Z]\w+)\.(\w+)\s*\(')
+# \b ensures we don't match a substring of a camelCase name (e.g. 'Service' inside 'documentService').
+_TS_SERVICE_CALL_RE = re.compile(r'\b([A-Z]\w+)\.(\w+)\s*\(')
+
+# Regex for lowercase instance-level service calls: instanceVar.methodName(
+_TS_SERVICE_CALL_INSTANCE_RE = re.compile(r'([a-z]\w+)\.(\w+)\s*\(')
+
+# Regexes for building import_map (ClassName → relative import path)
+_IMPORT_NAMED_RE = re.compile(r"import\s+\{([^}]*)\}\s+from\s+['\"]([^'\"]+)['\"]")
+_IMPORT_DEFAULT_RE = re.compile(r"import\s+([A-Z][A-Za-z0-9_]*)\s+from\s+['\"]([^'\"]+)['\"]")
+
+# Regexes for building var_type_map (instanceVar → ClassName)
+_VAR_NEW_RE = re.compile(r'(?:const|let|var)\s+([a-z]\w*)\s*=\s*new\s+([A-Z]\w*)\s*\(')
+_VAR_TYPE_ANNOT_RE = re.compile(r'(?:const|let|var)\s+([a-z]\w*)\s*:\s*([A-Z]\w*)')
+_CONSTRUCTOR_PARAM_RE = re.compile(
+    r'(?:private|protected|public|readonly)\s+([a-z]\w*)\s*:\s*([A-Z]\w*)'
+)
 
 # Regex to match a resolver section header like  Query: {  or  Mutation: {
 # Captures: (1) type name, (2) everything inside the outer braces
@@ -150,16 +174,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         # Used to create callLink from codegen hook objects to the TS wrapper function.
         self.ts_functions = {}
 
-        # Map "ClassName.methodName" -> KB object, for resolver→service callLink resolution.
-        self.service_methods = {}
-
         # Codegen hooks whose TS wrapper function was not yet seen when the hook was created.
         # Each entry: (codegen_obj, function_name)
         self.pending_codegen_links = []
-
-        # Resolver→service callLinks deferred when service file not yet processed.
-        # Each entry: (resolver_kb_obj, service_class, service_method)
-        self.pending_service_links = []
 
         # Set of (file_path, var_name) tuples for GQL defs that are exported.
         # Used as a guard in import-aware cross-file resolution: non-exported defs
@@ -209,18 +226,6 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                             if fn_kb:
                                 if fn_name not in self.ts_functions:
                                     self.ts_functions[fn_name] = fn_kb
-                                # Also store "ClassName.methodName" for resolver→service linking.
-                                if sym_type == 'Method':
-                                    try:
-                                        parent_kb = fn_kb.get_parent()
-                                        if parent_kb:
-                                            parent_name = parent_kb.get_name()
-                                            if parent_name:
-                                                qualified = parent_name + '.' + fn_name
-                                                if qualified not in self.service_methods:
-                                                    self.service_methods[qualified] = fn_kb
-                                    except Exception:
-                                        pass
             except Exception as sym_ex:
                 log.warning('[GraphQL][TS] Error collecting function symbols: ' + str(sym_ex))
 
@@ -775,20 +780,35 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                                               'let', 'var', 'if', 'else', 'try', 'catch')):
                         continue
 
-                    # Compute line number for the field
-                    abs_pos = brace_start + 1 + field_match.start()
+                    # Compute begin_line: use group(1) start so we land on the
+                    # field name line, not on the preceding comma/newline.
+                    abs_pos = brace_start + 1 + field_match.start(1)
                     line_num = source_text[:abs_pos].count('\n') + 1
 
-                    # Extract the field's function body for service call extraction
+                    # Extract the field's function body for service call extraction.
+                    # Use brace-matching to capture the full body; fall back to a
+                    # 500-char slice for arrow functions without braces (e.g. => expr).
                     field_body_start = brace_start + 1 + field_match.end()
-                    field_body = source_text[field_body_start:field_body_start + 500]
+                    field_body = source_text[field_body_start:field_body_start + 500]  # fallback
+
+                    # Compute end_line and replace the fallback with the full body
+                    # when brace-matching succeeds — reuses the same traversal.
+                    end_line = line_num  # fallback: same line
+                    func_text = source_text[field_body_start:]
+                    open_brace = func_text.find('{')
+                    if open_brace != -1:
+                        body_content = self._extract_brace_content(func_text, open_brace)
+                        if body_content is not None:
+                            close_pos = field_body_start + open_brace + 1 + len(body_content)
+                            end_line = source_text[:close_pos].count('\n') + 1
+                            field_body = body_content  # full body replaces 500-char fallback
 
                     if is_standard:
-                        found.append((type_name, field_name, line_num, field_body))
+                        found.append((type_name, field_name, line_num, end_line, field_body))
                     else:
                         # Store as potential custom resolver; will only create if
                         # file also has at least one standard type
-                        found.append((type_name, field_name, line_num, field_body))
+                        found.append((type_name, field_name, line_num, end_line, field_body))
 
             if not found or not has_standard_type:
                 return
@@ -799,7 +819,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 return
 
             seen = set()
-            for op_type, field_name, line_num, field_body in found:
+            for op_type, field_name, line_num, end_line, field_body in found:
                 pair = (op_type, field_name)
                 if pair in seen:
                     continue
@@ -810,8 +830,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     if not op_type[0].isupper():
                         continue
                 seen.add(pair)
-                self._create_ts_resolver(op_type, field_name, line_num,
-                                         field_body, parent_kb, file_path, source_file)
+                self._create_ts_resolver(op_type, field_name, line_num, end_line,
+                                         field_body, parent_kb, file_path, source_file,
+                                         source_text=source_text)
 
         except Exception as e:
             log.warning('[GraphQL][TS] _extract_ts_resolvers failed: ' + str(e))
@@ -842,28 +863,121 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             i += 1
         return None
 
-    def _extract_ts_service_call(self, field_body):
+    def _extract_ts_service_call(self, field_body, source_text=None, file_path=None):
         """
-        Extract (serviceClass, serviceMethod) from a TS resolver function body.
+        Extract (serviceClass, serviceMethod, serviceFilePath) from a TS resolver body.
 
-        TS resolvers typically call static methods: ClassName.methodName(...)
-        Returns (serviceClass, serviceMethod) or (None, None).
+        Detection order:
+        1. Uppercase class call: ClassName.methodName(  (e.g. UserService.findById()
+        2. Lowercase instance call: instanceVar.method(  resolved via var_type_map
+
+        Returns (className, methodName, resolvedFilePath) or (None, None, None).
         """
         if not field_body:
-            return (None, None)
-        m = _TS_SERVICE_CALL_RE.search(field_body)
-        if m:
-            cls = m.group(1)
-            method = m.group(2)
-            # Filter out common false positives (Promise.resolve, console.log, etc.)
-            if cls in ('Promise', 'console', 'Object', 'Array', 'JSON', 'Math',
-                       'Error', 'Date', 'String', 'Number', 'Boolean', 'RegExp'):
-                return (None, None)
-            return (cls, method)
-        return (None, None)
+            return (None, None, None)
 
-    def _create_ts_resolver(self, op_type, field_name, line_num, field_body,
-                            parent_kb, file_path, source_file=None):
+        # Build import_map { ClassName → relative_path } and
+        # var_type_map { instanceVar → ClassName } from full source text
+        import_map = {}
+        var_type_map = {}
+
+        if source_text:
+            # Named imports: import { Foo, Bar as Baz } from '...'
+            for nm in _IMPORT_NAMED_RE.finditer(source_text):
+                names_str, rel_path = nm.group(1), nm.group(2)
+                for name_part in names_str.split(','):
+                    name_part = name_part.strip()
+                    if ' as ' in name_part:
+                        _, local = name_part.split(' as ', 1)
+                        local = local.strip()
+                    else:
+                        local = name_part
+                    if local and local[0].isupper():
+                        import_map[local] = rel_path
+
+            # Default imports: import Foo from '...'
+            for nm in _IMPORT_DEFAULT_RE.finditer(source_text):
+                import_map[nm.group(1)] = nm.group(2)
+
+            # Instance types: const foo = new Foo()
+            for nm in _VAR_NEW_RE.finditer(source_text):
+                var_type_map[nm.group(1)] = nm.group(2)
+
+            # Instance types: const foo: Foo = ...
+            for nm in _VAR_TYPE_ANNOT_RE.finditer(source_text):
+                if nm.group(1) not in var_type_map:
+                    var_type_map[nm.group(1)] = nm.group(2)
+
+            # Constructor params: private|protected|public foo: Foo
+            for nm in _CONSTRUCTOR_PARAM_RE.finditer(source_text):
+                if nm.group(1) not in var_type_map:
+                    var_type_map[nm.group(1)] = nm.group(2)
+
+        _CLASS_FP = frozenset({
+            'Promise', 'console', 'Object', 'Array', 'JSON', 'Math',
+            'Error', 'Date', 'String', 'Number', 'Boolean', 'RegExp',
+        })
+        _INSTANCE_FP = frozenset({
+            'this', 'ctx', 'context', 'req', 'res',
+            'console', 'process', 'module',
+        })
+
+        class_name = method_name = None
+
+        # 1. Try uppercase class call: ClassName.method(
+        # Only accept if the class name is in import_map — avoids false-positive matches
+        # (e.g. a bare "Service" token from unrelated code) blocking the instance-call
+        # resolution in Step 2.
+        m = _TS_SERVICE_CALL_RE.search(field_body)
+        if m and m.group(1) not in _CLASS_FP:
+            if m.group(1) in import_map:
+                class_name = m.group(1)
+                method_name = m.group(2)
+            else:
+                log.info('[GraphQL][TS] _extract_ts_service_call: Step1 skipped class "{}" '
+                         '(not in import_map) — match context: {!r}'.format(
+                             m.group(1), field_body[max(0, m.start()-20):m.end()+20]))
+
+        # 2. Try lowercase instance call: instanceVar.method(
+        # Use finditer() so that false-positive first matches (console.log, args.x, etc.)
+        # don't block us from finding the real service call further in the body.
+        if not class_name:
+            for m in _TS_SERVICE_CALL_INSTANCE_RE.finditer(field_body):
+                inst = m.group(1)
+                if inst not in _INSTANCE_FP and inst in var_type_map:
+                    class_name = var_type_map[inst]
+                    method_name = m.group(2)
+                    break
+
+        if not class_name or not method_name:
+            log.info('[GraphQL][TS] _extract_ts_service_call: no match. '
+                     'import_map keys={} var_type_map keys={} field_body[:120]={!r}'.format(
+                         list(import_map.keys()), list(var_type_map.keys()),
+                         field_body[:120] if field_body else ''))
+            return (None, None, None)
+
+        # Resolve the service file path from import_map
+        service_file_path = None
+        if file_path and class_name in import_map:
+            resolver_dir = os.path.dirname(file_path)
+            rel = import_map[class_name]
+            for ext in ('', '.ts', '.tsx', '/index.ts'):
+                candidate = os.path.normpath(os.path.join(resolver_dir, rel + ext))
+                if os.path.exists(candidate):
+                    service_file_path = candidate
+                    break
+            if service_file_path is None:
+                service_file_path = os.path.normpath(
+                    os.path.join(resolver_dir, rel + '.ts'))
+        else:
+            log.info('[GraphQL][TS] _extract_ts_service_call: class "{}" found but not in import_map. '
+                     'file_path truthy={} import_map keys={}'.format(
+                         class_name, bool(file_path), list(import_map.keys())))
+
+        return (class_name, method_name, service_file_path)
+
+    def _create_ts_resolver(self, op_type, field_name, line_num, end_line, field_body,
+                            parent_kb, file_path, source_file=None, source_text=None):
         """Create a TsNodeJsResolver* KB object for one TS resolver function."""
         try:
             resolver_type = _TS_RESOLVER_TYPE_MAP.get(op_type, 'TsNodeJsResolverCustom')
@@ -882,7 +996,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                         file_obj = source_file.get_file()
                     except Exception:
                         file_obj = source_file
-                    obj.save_position(Bookmark(file_obj, line_num, 1, line_num, 1))
+                    obj.save_position(Bookmark(file_obj, line_num, 1, end_line or line_num, 1))
             except Exception as bm_e:
                 log.info('[GraphQL][TS] Resolver bookmark failed for "'
                          + op_type + '.' + field_name + '": ' + str(bm_e))
@@ -891,27 +1005,21 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             obj.save_property('GraphQL_NodeJs_Resolver.fieldName', field_name)
 
             # Extract service call info
-            service_class, service_method = self._extract_ts_service_call(field_body)
+            try:
+                service_class, service_method, service_file_path = \
+                    self._extract_ts_service_call(field_body, source_text, file_path)
+            except Exception as _se:
+                log.warning('[GraphQL][TS] _extract_ts_service_call raised for "{}": {}'.format(
+                    field_name, str(_se)))
+                service_class = service_method = service_file_path = None
+            log.info('[GraphQL][TS] service extraction "{}": class={} method={} path={}'.format(
+                field_name, service_class, service_method, service_file_path))
             if service_class:
                 obj.save_property('GraphQL_NodeJs_Resolver.serviceClass', service_class)
             if service_method:
                 obj.save_property('GraphQL_NodeJs_Resolver.serviceMethod', service_method)
-
-            # Create callLink: resolver → service method KB object
-            if service_class and service_method:
-                qualified = service_class + '.' + service_method
-                svc_kb = self.service_methods.get(qualified) or self.ts_functions.get(service_method)
-                if svc_kb:
-                    try:
-                        create_link("callLink", obj, svc_kb)
-                        _glog('RESULT', 'ServiceLink', _ctx(),
-                              'callLink {} → {}'.format(field_name, qualified))
-                    except Exception as link_ex:
-                        log.warning('[GraphQL][TS] service callLink failed for "{}": {}'.format(
-                            qualified, str(link_ex)))
-                else:
-                    # Service file not yet processed — defer to on_end
-                    self.pending_service_links.append((obj, service_class, service_method))
+            if service_file_path:
+                obj.save_property('GraphQL_NodeJs_Resolver.serviceFilePath', service_file_path)
 
             self.created_objects.append({
                 'name': field_name, 'type': resolver_type, 'file_path': file_path})
@@ -972,23 +1080,6 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                     except Exception as e:
                         log.warning('[GraphQL][TS] codegen callLink failed for "{}": {}'.format(fn_name, str(e)))
             self.pending_codegen_links = []
-
-        # Resolve pending resolver→service callLinks.
-        if self.pending_service_links:
-            for (resolver_obj, svc_class, svc_method) in self.pending_service_links:
-                qualified = svc_class + '.' + svc_method
-                svc_kb = self.service_methods.get(qualified) or self.ts_functions.get(svc_method)
-                if svc_kb:
-                    try:
-                        create_link("callLink", resolver_obj, svc_kb)
-                        _glog('RESULT', 'ServiceLink', _ctx(),
-                              'pending callLink resolved → {}'.format(qualified))
-                    except Exception as e:
-                        log.warning('[GraphQL][TS] pending service callLink failed for "{}": {}'.format(
-                            qualified, str(e)))
-                else:
-                    log.warning('[GraphQL][TS] service method not found in KB: {}'.format(qualified))
-            self.pending_service_links = []
 
         # Bug 2 fix: resolve pending useLinks for cross-file GQL definitions.
         # Tuple format: (request_obj, operation_name, caller_file_kb, source_pattern, hook_ps, file_path)

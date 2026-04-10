@@ -155,7 +155,7 @@
 		<tree parent="GraphQLSchema" category="EnlightenTree"/>
 	</type>
 	<type name="GraphQLField" rid="14">
-		<description>Field in a GraphQL Class</description>
+		<description>GraphQL Field</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<tree parent="GraphQLType" category="EnlightenTree"/>
@@ -321,21 +321,21 @@
 	<!-- Angular Apollo service calls (Pattern 3) -->
 	<!-- Js* types are created by the JavaScript analyzer; Ts* types by the TypeScript analyzer -->
 	<type name="JsGraphQLApolloAngularQuery" rid="38">
-		<description>JS Angular Apollo query call (this.apollo.query)</description>
+		<description>JS Angular Apollo query call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<type name="JsGraphQLApolloAngularMutation" rid="39">
-		<description>JS Angular Apollo mutation call (this.apollo.mutate)</description>
+		<description>JS Angular Apollo mutation call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<type name="JsGraphQLApolloAngularWatchQuery" rid="40">
-		<description>JS Angular Apollo watchQuery call (this.apollo.watchQuery)</description>
+		<description>JS Angular Apollo watchQuery call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
@@ -448,21 +448,21 @@
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<type name="TsGraphQLApolloAngularQuery" rid="55">
-		<description>TS Angular Apollo query call (this.apollo.query)</description>
+		<description>TS Angular Apollo query call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<type name="TsGraphQLApolloAngularMutation" rid="56">
-		<description>TS Angular Apollo mutation call (this.apollo.mutate)</description>
+		<description>TS Angular Apollo mutation call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
 		<inheritedCategory name="GraphQL_Module"/>
 	</type>
 	<type name="TsGraphQLApolloAngularWatchQuery" rid="57">
-		<description>TS Angular Apollo watchQuery call (this.apollo.watchQuery)</description>
+		<description>TS Angular Apollo watchQuery call</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>
@@ -499,6 +499,11 @@
 		<property name="serviceMethod" type="string" rid="111">
 			<description>Method name of the service called by this resolver (e.g. findAll)</description>
 			<attribute name="INF_TYPE" intValue="2135111"/>
+			<attribute name="INF_SUB_TYPE" intValue="0"/>
+		</property>
+		<property name="serviceFilePath" type="string" rid="112">
+			<description>Absolute resolved path of the source file containing the service called by this resolver</description>
+			<attribute name="INF_TYPE" intValue="2135112"/>
 			<attribute name="INF_SUB_TYPE" intValue="0"/>
 		</property>
 	</category>
@@ -578,6 +583,44 @@
 	</type>
 	<type name="JsNodeJsApolloSchema" rid="70">
 		<description>JS NodeJS Apollo Server inline typeDefs schema</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<!-- Unresolved NodeJS resolver targets (schema field could not be linked to a NodeJS resolver) -->
+	<type name="TsUnresolvedNodeJsResolver" rid="74">
+		<description>TS Unresolved NodeJS Resolver</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="JsUnresolvedNodeJsResolver" rid="75">
+		<description>JS Unresolved NodeJS Resolver</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<!-- Unresolved schema field target (client op could not be linked to a GraphQL schema field) -->
+	<type name="UnresolvedSchemaField" rid="73">
+		<description>Unresolved Schema Field</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<!-- Unresolved service method targets (resolver could not be linked to a KB service method) -->
+	<type name="TsUnresolvedServiceMethod" rid="71">
+		<description>TS Unresolved Service Method</description>
+		<inheritedCategory name="UAObject"/>
+		<inheritedCategory name="GraphQL_Artifacts"/>
+		<inheritedCategory name="GraphQL"/>
+		<inheritedCategory name="GraphQL_Module"/>
+	</type>
+	<type name="JsUnresolvedServiceMethod" rid="72">
+		<description>JS Unresolved Service Method</description>
 		<inheritedCategory name="UAObject"/>
 		<inheritedCategory name="GraphQL_Artifacts"/>
 		<inheritedCategory name="GraphQL"/>

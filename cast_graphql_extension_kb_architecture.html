@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAST GraphQL Extension — KB Object Architecture</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#12122a;font-family:system-ui,sans-serif}
+:root{--bg:#12122a;--bg2:#1a1a3e;--card:#1e1e42;--border:#2e2e60}
+.wrap{background:var(--bg);font-family:system-ui,sans-serif;padding:20px 16px 28px;color:#e0e0f0;min-width:680px;max-width:1100px;margin:0 auto}
+.title-bar{text-align:center;margin-bottom:18px}
+.title-bar h1{font-size:15px;font-weight:500;color:#c5c3f0;letter-spacing:.04em}
+.title-bar p{font-size:11px;color:#7070a8;margin-top:3px}
+.main{display:flex;gap:12px;align-items:flex-start}
+.layers{flex:1;display:flex;flex-direction:column;gap:0}
+.connector{display:flex;align-items:center;justify-content:center;height:36px;position:relative}
+.connector-line{width:2px;background:linear-gradient(#4040a0,#6060c0);flex:0 0 2px;height:100%;position:absolute;left:50%;transform:translateX(-50%)}
+.connector-label{background:var(--bg);padding:2px 8px;border-radius:10px;font-size:10px;font-style:italic;color:#a0a0d8;border:1px solid #3030608a;position:relative;z-index:1;white-space:nowrap}
+.layer{border-radius:10px;padding:10px 12px;position:relative}
+.l0{background:#232335;border:1.5px solid #4a4a6a}
+.l1{background:#0d2040;border:1.5px solid #1e5090}
+.l2{background:#1e0d40;border:1.5px solid #5a1eb0}
+.l3{background:#0d2a14;border:1.5px solid #1d6030}
+.l4-wrap{display:flex;gap:8px}
+.l4a{background:#2a1500;border:1.5px solid #804010;border-radius:8px;flex:1;padding:8px 10px}
+.l4b{background:#1a1a0a;border:1.5px solid #606020;border-radius:8px;flex:1;padding:8px 10px}
+.l5{background:#2a0d0d;border:1.5px solid #801818}
+.l6{background:#0d1a2a;border:1.5px dashed #206080}
+.layer-title{font-size:10px;font-weight:500;color:#9090c8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
+.layer-subtitle{font-size:12px;font-weight:500;margin-bottom:8px}
+.l0 .layer-subtitle{color:#9090b8}
+.l1 .layer-subtitle{color:#7ab8f8}
+.l2 .layer-subtitle{color:#b07af8}
+.l3 .layer-subtitle{color:#6ad890}
+.l4a .layer-subtitle,.l4b .layer-subtitle{color:#f8a04a}
+.l5 .layer-subtitle{color:#f87a7a}
+.l6 .layer-subtitle{color:#60c8f0}
+.items{display:flex;flex-wrap:wrap;gap:4px 6px}
+.item{font-family:monospace;font-size:10.5px;padding:2px 7px;border-radius:4px;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.item-comment{font-family:system-ui;font-size:9.5px;opacity:.65;font-style:italic}
+.l1 .item{background:#0a3060;border:1px solid #1a60b0;color:#a0ccf8}
+.l2 .item{background:#2a0a50;border:1px solid #6020c0;color:#c890f8}
+.l3 .item{background:#0a2a10;border:1px solid #1a7030;color:#80e8a0}
+.l4a .item{background:#2a1200;border:1px solid #904820;color:#f8b060}
+.l4b .item{background:#181810;border:1px solid #606820;color:#e8e060}
+.l5 .item{background:#280808;border:1px solid #801020;color:#f89090}
+.l6 .item{background:#081828;border:1px solid #105878;color:#80d8f8}
+.item.fallback{border-style:dashed;border-color:#e03030!important;background:rgba(80,0,0,.25)!important;color:#f09090!important}
+.props-box{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:5px 8px;margin-top:6px;font-size:10px;color:#8080b0}
+.props-box span{font-family:monospace;color:#a0a8d8;font-size:10px}
+.tree{font-size:10.5px;line-height:1.7;color:#70d890;font-family:monospace}
+.tree .dim{color:#4a8060}
+.note{font-size:9.5px;color:#6060a0;font-style:italic;margin-top:4px}
+.note-info{font-size:9.5px;color:#4090a8;font-style:italic;margin-top:4px}
+.sql-tables{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.sql-table{background:#051420;border:1px solid #1a6080;border-radius:6px;overflow:hidden;min-width:130px}
+.sql-table-head{background:#0a2a40;padding:3px 8px;font-size:10px;font-family:monospace;color:#60c0e8;font-weight:500}
+.sql-table-row{padding:2px 8px;font-size:9.5px;font-family:monospace;color:#5090b0;border-top:1px solid #0e2a3a;display:flex;gap:6px;align-items:center}
+.sql-table-row .pk{color:#f8c060;font-size:8.5px}
+.sql-table-row .fk{color:#a060f8;font-size:8.5px}
+.sql-table-row .col{color:#7ab8d8}
+.happy{display:flex;flex-direction:column;align-items:center;gap:0;width:148px;flex-shrink:0}
+.hp-label{font-size:9.5px;color:#f8d060;text-align:center;font-weight:500;letter-spacing:.05em;margin-bottom:6px;text-transform:uppercase}
+.hp-node{background:rgba(40,30,0,.8);border:1.5px solid #c0900a;border-radius:7px;padding:4px 8px;width:100%;text-align:center;font-size:9px;font-family:monospace;color:#f8e090;line-height:1.35}
+.hp-node em{font-family:system-ui;font-style:normal;font-size:9px;color:#c0b070;display:block}
+.hp-arrow{width:2px;height:22px;background:#c09020;flex-shrink:0;position:relative;left:50%;transform:translateX(-50%)}
+.hp-arrow::after{content:'';position:absolute;bottom:-5px;left:50%;transform:translateX(-50%);border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid #c09020}
+.table-wrap{margin-top:18px}
+.tbl{width:100%;border-collapse:collapse;font-size:10px}
+.tbl th{background:#1e1e44;color:#8080c0;font-weight:500;padding:5px 8px;text-align:left;border-bottom:1px solid #2e2e5a}
+.tbl td{padding:4px 8px;border-bottom:1px solid #1e1e3a;color:#c0c0e0;font-family:monospace;font-size:9.5px;white-space:nowrap}
+.tbl td:first-child{color:#8090e0;font-family:system-ui;font-size:9px}
+.tbl tr:hover td{background:rgba(60,60,120,.2)}
+.link-use{color:#a070f8}
+.link-call{color:#70b8f8}
+.l3-split{display:flex;gap:10px;align-items:stretch}
+.l3-sdl{flex:1;background:#0a2010;border:1.5px solid #1d6030;border-radius:8px;padding:8px 10px}
+.l3-sdl-title{font-size:10px;font-weight:500;color:#3a9060;margin-bottom:6px}
+.l3-typedefs{flex:1;background:#071a0e;border:1.5px dashed #2a7040;border-radius:8px;padding:8px 10px;position:relative}
+.l3-typedefs-title{font-size:10px;font-weight:500;color:#50c070;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.badge-warn{font-size:8px;background:#2a1a00;border:1px solid #806020;border-radius:4px;color:#c09840;padding:1px 5px;white-space:nowrap;font-style:normal;font-weight:400}
+.l3-typedefs .item{background:#0a1e10;border:1px solid #2a6838;color:#60c880}
+.l3-typedefs-note{font-size:9px;color:#3a7850;font-style:italic;margin-top:7px;line-height:1.55;border-top:1px solid #1a3a24;padding-top:6px}
+.declares-col{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:0 2px;flex-shrink:0}
+.declares-lbl{font-size:8px;font-style:italic;color:#3a7848;text-align:center;line-height:1.4;white-space:nowrap}
+.declares-line{width:0;border-left:1.5px dashed #2a6838;height:32px}
+.declares-head{width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid #2a6838}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title-bar">
+    <h1>CAST Imaging — GraphQL Extension: KB Object Architecture</h1>
+    <p>End-to-end chain from React/Angular component to backend service method</p>
+  </div>
+
+  <div class="main">
+    <div class="happy">
+      <div class="hp-label">★ Happy path</div>
+      <div class="hp-node">React Component<em>calls useQuery</em></div>
+      <div class="hp-arrow"></div>
+      <div class="hp-node">TsGraphQLApolloHookQuery<em>"useQuery:GetUsers"</em></div>
+      <div class="hp-arrow"></div>
+      <div class="hp-node">TsGqlQuery<em>"GetUsers"</em></div>
+      <div class="hp-arrow"></div>
+      <div class="hp-node">GraphQLField<em>Query.users</em></div>
+      <div class="hp-arrow"></div>
+      <div class="hp-node">TsNodeJsResolverQuery<em>"users"</em></div>
+      <div class="hp-arrow"></div>
+      <div class="hp-node">UserService.findAll()<em>service method</em></div>
+      <div class="hp-arrow"></div>
+      <div class="hp-node">users table<em>SELECT * FROM users</em></div>
+    </div>
+
+    <div class="layers">
+
+      <div class="layer l0">
+        <div class="layer-title">Source context</div>
+        <div class="layer-subtitle">Component — React or Angular</div>
+        <div style="font-size:10px;color:#7070a8">No KB object created at this level — source file context only</div>
+      </div>
+
+      <div class="connector">
+        <div class="connector-line"></div>
+        <div class="connector-label link-call">callLink</div>
+      </div>
+
+      <div class="layer l1">
+        <div class="layer-title">Level 2 — Apollo hook / method call</div>
+        <div class="layer-subtitle">Apollo Hook &amp; Client Objects</div>
+        <div class="items">
+          <div class="item">TsGraphQLApolloHookQuery<span class="item-comment">useQuery(GET_X)</span></div>
+          <div class="item">TsGraphQLApolloHookLazyQuery<span class="item-comment">useLazyQuery(GET_X)</span></div>
+          <div class="item">TsGraphQLApolloHookMutation<span class="item-comment">useMutation(DO_X)</span></div>
+          <div class="item">TsGraphQLApolloHookSubscription<span class="item-comment">useSubscription(ON_X)</span></div>
+          <div class="item">TsGraphQLApolloClientQuery<span class="item-comment">client.query({query:X})</span></div>
+          <div class="item">TsGraphQLApolloClientMutation<span class="item-comment">client.mutate({mutation:X})</span></div>
+          <div class="item">TsGraphQLApolloCodegenQuery<span class="item-comment">useGetUsersQuery()</span></div>
+          <div class="item">TsGraphQLApolloAngularQuery<span class="item-comment">this.apollo.query({…})</span></div>
+          <div class="item">TsGraphQLApolloAngularWatchQuery<span class="item-comment">this.apollo.watchQuery(…)</span></div>
+        </div>
+        <div class="note">JS equivalents use Js* prefix (e.g. JsGraphQLApolloHookQuery)</div>
+      </div>
+
+      <div class="connector">
+        <div class="connector-line"></div>
+        <div class="connector-label link-use">useLink</div>
+      </div>
+
+      <div class="layer l2">
+        <div class="layer-title">Level 1 — GQL definition (gql template literal)</div>
+        <div class="layer-subtitle">GQL Definition Objects</div>
+        <div class="items">
+          <div class="item">TsGqlQuery<span class="item-comment">const GET_USERS = gql`query GetUsers { … }`</span></div>
+          <div class="item">TsGqlMutation<span class="item-comment">const DO_X = gql`mutation …`</span></div>
+          <div class="item">TsGqlSubscription<span class="item-comment">const ON_X = gql`subscription …`</span></div>
+          <div class="item fallback">TsGqlUnresolvedDefinition<span class="item-comment">gql tag not resolvable</span></div>
+        </div>
+        <div class="props-box">
+          Properties stored: <span>operationName</span> · <span>rawQueryText</span> · <span>fieldsSelected</span> · <span>variables</span> · <span>exported</span>
+        </div>
+        <div class="note">JS equivalents use Js* prefix · gqlTag variants (gql, graphql, loader) all supported</div>
+      </div>
+
+      <div class="connector">
+        <div class="connector-line"></div>
+        <div class="connector-label link-use">useLink <span style="color:#6060a0">(via fieldsSelected)</span></div>
+      </div>
+
+      <div class="layer l3">
+        <div class="layer-title">Level 0 — SDL schema (GraphQL files)</div>
+        <div class="layer-subtitle">GraphQL Schema Objects</div>
+        <div class="l3-split">
+
+          <!-- Sub-box A: SDL .graphql files -->
+          <div class="l3-sdl">
+            <div class="l3-sdl-title">SDL schema — .graphql files</div>
+            <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+              <div class="tree">
+                GraphQLSchema<br>
+                <span class="dim">└─</span> GraphQLType <em style="color:#4a9060;font-style:normal">(type Query)</em><br>
+                <span class="dim">&nbsp;&nbsp;&nbsp;├─</span> GraphQLField: <span style="color:#70f898">users</span> <span style="color:#3a7050;font-size:9.5px">◄ useLink target</span><br>
+                <span class="dim">&nbsp;&nbsp;&nbsp;└─</span> GraphQLField: <span style="color:#70f898">createUser</span><br>
+                <span class="dim">└─</span> GraphQLType <em style="color:#4a9060;font-style:normal">(type Mutation)</em><br>
+                <span class="dim">&nbsp;&nbsp;&nbsp;└─</span> GraphQLField: <span style="color:#70f898">createUser</span><br>
+                <span class="dim">└─</span> GraphQLType <em style="color:#4a9060;font-style:normal">(type Subscription)</em><br>
+                <span class="dim">&nbsp;&nbsp;&nbsp;└─</span> GraphQLField: <span style="color:#70f898">userCreated</span><br>
+                <span class="dim">└─</span> GraphQLType <em style="color:#4a9060;font-style:normal">(type User)</em><br>
+                <span class="dim">&nbsp;&nbsp;&nbsp;└─</span> GraphQLField: <span style="color:#70f898">id, name …</span>
+              </div>
+              <div class="items" style="flex-direction:column;gap:3px">
+                <div class="item" style="background:#0a2a14;border-color:#1a7030;color:#80e8a0">GraphQLEnum</div>
+                <div class="item" style="background:#0a2a14;border-color:#1a7030;color:#80e8a0">GraphQLInterface</div>
+                <div class="item" style="background:#0a2a14;border-color:#1a7030;color:#80e8a0">GraphQLFragment</div>
+                <div class="item" style="background:#0a2a14;border-color:#1a7030;color:#80e8a0">GraphQLInput</div>
+                <div class="item" style="background:#0a2a14;border-color:#1a7030;color:#80e8a0">GraphQLScalar</div>
+                <div class="item fallback">UnresolvedSchemaField</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Declares arrow between the two sub-boxes -->
+          <div class="declares-col">
+            <div class="declares-lbl">declares<br>(same fields,<br>different source)</div>
+            <div class="declares-line"></div>
+            <div class="declares-head"></div>
+          </div>
+
+          <!-- Sub-box B: TypeDefs inline TS/JS -->
+          <div class="l3-typedefs">
+            <div class="l3-typedefs-title">
+              TypeDefs (inline — TS/JS files)
+              <span class="badge-warn">⚠ not fully implemented</span>
+            </div>
+            <div class="items" style="flex-direction:column;gap:3px">
+              <div class="item">TsNodeJsApolloSchema<span class="item-comment">&nbsp;const typeDefs = gql`type Query { users: [User] }`</span></div>
+              <div class="item">JsNodeJsApolloSchema<span class="item-comment">&nbsp;same pattern in .js files</span></div>
+            </div>
+            <div class="l3-typedefs-note">
+              Same conceptual level as SDL schema fields — declares GraphQL types &amp; fields inline in server code instead of a .graphql file.<br>
+              Processed separately by the NodeJS analyzer (TS/JS).
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin:0">
+        <div class="connector" style="flex:1">
+          <div class="connector-line"></div>
+          <div class="connector-label link-call" style="font-size:9px">callLink (operationType + fieldName)</div>
+        </div>
+        <div class="connector" style="flex:1">
+          <div class="connector-line"></div>
+          <div class="connector-label link-call" style="font-size:9px">callLink (@QueryMapping / @Controller)</div>
+        </div>
+      </div>
+
+      <div class="l4-wrap">
+        <div class="l4a">
+          <div class="layer-title">Level 3 — backend resolver</div>
+          <div class="layer-subtitle">NodeJS Apollo Server</div>
+          <div class="items" style="flex-direction:column;gap:3px">
+            <div class="item" style="background:#2a1200;border-color:#904820;color:#f8b060">TsNodeJsResolverQuery<span class="item-comment">&nbsp;Query: { users: (_, args) =&gt; … }</span></div>
+            <div class="item" style="background:#2a1200;border-color:#904820;color:#f8b060">TsNodeJsResolverMutation<span class="item-comment">&nbsp;Mutation: { createUser: … }</span></div>
+            <div class="item" style="background:#2a1200;border-color:#904820;color:#f8b060">TsNodeJsResolverSubscription<span class="item-comment">&nbsp;Subscription: { userCreated: … }</span></div>
+            <div class="item" style="background:#2a1200;border-color:#904820;color:#f8b060">TsNodeJsResolverCustom<span class="item-comment">&nbsp;User: { posts: … }</span></div>
+            <div class="item" style="background:#2a1200;border-color:#904820;color:#f8b060">TsNodeJsApolloSchema<span class="item-comment">&nbsp;const typeDefs = gql`…`</span></div>
+            <div class="item fallback" style="margin-top:2px">TsUnresolvedNodeJsResolver</div>
+          </div>
+          <div class="props-box" style="margin-top:6px">
+            <span>operationType</span> · <span>fieldName</span> · <span>serviceClass</span> · <span>serviceMethod</span> · <span>serviceFilePath</span>
+          </div>
+        </div>
+        <div class="l4b">
+          <div class="layer-title">Level 3 — backend resolver</div>
+          <div class="layer-subtitle">Java Spring GraphQL</div>
+          <div class="items" style="flex-direction:column;gap:3px">
+            <div class="item" style="background:#181810;border-color:#606820;color:#e8e060">JV_CLASS (UserResolver)<span class="item-comment">&nbsp;@Controller</span></div>
+            <div class="item" style="background:#181810;border-color:#606820;color:#e8e060">JV_METHOD (users)<span class="item-comment">&nbsp;@QueryMapping</span></div>
+            <div class="item" style="background:#181810;border-color:#606820;color:#e8e060">JV_METHOD (createUser)<span class="item-comment">&nbsp;@MutationMapping</span></div>
+            <div class="item" style="background:#181810;border-color:#606820;color:#e8e060">JV_METHOD (userUpdated)<span class="item-comment">&nbsp;@SubscriptionMapping</span></div>
+          </div>
+          <div class="note" style="margin-top:6px">Native CAST JV_ types — no custom KB objects created</div>
+        </div>
+      </div>
+
+      <div class="connector" style="justify-content:flex-start;padding-left:25%">
+        <div class="connector-line" style="left:25%"></div>
+        <div class="connector-label link-call" style="margin-left:0">callLink (serviceClass + serviceMethod)</div>
+      </div>
+
+      <div class="layer l5">
+        <div class="layer-title">Level 4 — service method (Node.js only)</div>
+        <div class="layer-subtitle">Service Method Objects</div>
+        <div class="items">
+          <div class="item">UserService.findAll()<span class="item-comment">&nbsp;injected service</span></div>
+          <div class="item">UserService.findById()</div>
+          <div class="item">UserService.create()</div>
+          <div class="item fallback">TsUnresolvedServiceMethod</div>
+        </div>
+      </div>
+
+      <div class="connector">
+        <div class="connector-line"></div>
+        <div class="connector-label" style="color:#4090a8;border-color:#1a5070aa">callLink / DB access</div>
+      </div>
+
+      <div class="layer l6">
+        <div class="layer-title">Level 5 — data layer (exemple · SQL ici, mais peut être n'importe quelle DB)</div>
+        <div class="layer-subtitle">Tables SQL — exemple PostgreSQL / MySQL</div>
+        <div class="sql-tables">
+          <div class="sql-table">
+            <div class="sql-table-head">users</div>
+            <div class="sql-table-row"><span class="pk">PK</span><span class="col">id UUID</span></div>
+            <div class="sql-table-row"><span class="col">name VARCHAR</span></div>
+            <div class="sql-table-row"><span class="col">email VARCHAR</span></div>
+            <div class="sql-table-row"><span class="col">created_at TIMESTAMP</span></div>
+          </div>
+          <div class="sql-table">
+            <div class="sql-table-head">posts</div>
+            <div class="sql-table-row"><span class="pk">PK</span><span class="col">id UUID</span></div>
+            <div class="sql-table-row"><span class="fk">FK</span><span class="col">user_id UUID</span></div>
+            <div class="sql-table-row"><span class="col">title VARCHAR</span></div>
+            <div class="sql-table-row"><span class="col">body TEXT</span></div>
+          </div>
+          <div class="sql-table">
+            <div class="sql-table-head">orders</div>
+            <div class="sql-table-row"><span class="pk">PK</span><span class="col">id UUID</span></div>
+            <div class="sql-table-row"><span class="fk">FK</span><span class="col">user_id UUID</span></div>
+            <div class="sql-table-row"><span class="col">status VARCHAR</span></div>
+            <div class="sql-table-row"><span class="col">total DECIMAL</span></div>
+          </div>
+          <div class="sql-table">
+            <div class="sql-table-head">products</div>
+            <div class="sql-table-row"><span class="pk">PK</span><span class="col">id UUID</span></div>
+            <div class="sql-table-row"><span class="col">name VARCHAR</span></div>
+            <div class="sql-table-row"><span class="col">price DECIMAL</span></div>
+            <div class="sql-table-row"><span class="col">stock INT</span></div>
+          </div>
+        </div>
+        <div class="note-info" style="margin-top:8px">
+          ⓘ Ceci est un exemple avec PostgreSQL/MySQL. La data layer pourrait aussi être MongoDB (collections), DynamoDB (tables NoSQL), Redis, Elasticsearch, un ORM (TypeORM, Prisma, Hibernate), ou tout autre système de persistence.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <div style="font-size:10px;color:#7070a8;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Link summary</div>
+    <table class="tbl">
+      <thead><tr><th>Link type</th><th>From</th><th>To</th></tr></thead>
+      <tbody>
+        <tr><td class="link-call">callLink</td><td>Component</td><td>Hook / Apollo object</td></tr>
+        <tr><td class="link-use">useLink</td><td>Hook object</td><td>TsGqlQuery / Mutation / Subscription</td></tr>
+        <tr><td class="link-use">useLink</td><td>TsGqlQuery (via fieldsSelected)</td><td>GraphQLField</td></tr>
+        <tr><td class="link-call">callLink</td><td>GraphQLField</td><td>JV_METHOD (Java @*Mapping)</td></tr>
+        <tr><td class="link-call">callLink</td><td>GraphQLField</td><td>TsNodeJsResolver*</td></tr>
+        <tr><td class="link-call">callLink</td><td>TsNodeJsResolver*</td><td>TS service method</td></tr>
+        <tr><td class="link-call" style="color:#4090a8">callLink / DB</td><td>TS service method</td><td>SQL table (ou autre DB)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</body>
+</html>

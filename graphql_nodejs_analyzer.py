@@ -20,6 +20,7 @@ Links are created in graphql_application_level.py:
   GraphQLField -callLink-> JsNodeJsResolver*  (matched by operationType + fieldName)
 """
 
+import os
 import re
 from cast.analysers import ua, log, CustomObject, create_link, Bookmark
 from cast import Event
@@ -51,8 +52,15 @@ _OPERATION_TYPE_TO_JS_TYPE = {
     'Subscription': 'JsNodeJsResolverSubscription',
 }
 
-# Special resolver keys that are meta-resolvers, not field resolvers
-_SKIP_FIELD_NAMES = frozenset({'__resolveType', '__isTypeOf', 'subscribe'})
+# Special resolver keys that are meta-resolvers or middleware helpers, not field resolvers
+_SKIP_FIELD_NAMES = frozenset({
+    '__resolveType', '__isTypeOf', 'subscribe',
+    # Apollo cache policy helpers (false positive from InMemoryCache type policies)
+    'merge', 'read', 'keyArgs',
+    # Common middleware / utility function calls that appear inside resolver bodies
+    'requireAuth', 'validateRole', 'validateMinimumRole',
+    'withFilter', 'publish',
+})
 
 # Built-in GraphQL scalars and meta-keys that are NOT custom type resolvers
 _BUILTIN_GRAPHQL_NAMES = frozenset({
@@ -62,10 +70,67 @@ _BUILTIN_GRAPHQL_NAMES = frozenset({
 })
 
 # Regex to extract service call from JS resolver body: ctx.serviceName.methodName(
-_JS_SERVICE_CALL_RE = re.compile(r'ctx\.(\w+)\.(\w+)\s*\(')
+# Matches any short lowercase context-like variable (ctx, context, req, etc.)
+_JS_SERVICE_CALL_RE = re.compile(r'\b(?:ctx|context|req|request)\b\.(\w+)\.(\w+)\s*\(')
 
 # Regex to extract context key → class mapping: key: new ClassName(  or  key = new ClassName(
 _CONTEXT_KEY_TO_CLASS_RE = re.compile(r'(\w+)\s*[:=]\s*new\s+(\w+)\s*\(')
+
+# ES6 import: import { Name } from 'path'  or  import Name from 'path'
+_ES6_IMPORT_RE = re.compile(
+    r"import\s+(?:\{([^}]+)\}|(\w+))\s+from\s+['\"]([^'\"]+)['\"]"
+)
+# CommonJS require: const { Name } = require('path')  or  const Name = require('path')
+_CJS_REQUIRE_RE = re.compile(
+    r"(?:const|let|var)\s+(?:\{([^}]+)\}|(\w+))\s*=\s*require\(['\"]([^'\"]+)['\"]\)"
+)
+# Instance creation: const varName = new ClassName(
+_NEW_INSTANCE_RE = re.compile(
+    r'(?:const|let|var)\s+(\w+)\s*=\s*new\s+([A-Z]\w+)\s*\('
+)
+# Direct class call: ClassName.methodName(
+_JS_DIRECT_CLASS_RE = re.compile(r'([A-Z]\w+)\.(\w+)\s*\(')
+# Instance call: instanceVar.methodName(
+_JS_INSTANCE_CALL_RE = re.compile(r'([a-z]\w+)\.(\w+)\s*\(')
+# this.property.methodName(  — class method body calling an injected service
+_JS_THIS_INSTANCE_CALL_RE = re.compile(r'this\.([a-z]\w+)\.(\w+)\s*\(')
+
+# ── var_type_map enrichment regexes ──────────────────────────────────────────
+
+# this.foo = new Foo(  — assignment in class constructor body
+_THIS_NEW_INSTANCE_RE = re.compile(
+    r'this\.([a-z]\w+)\s*=\s*new\s+([A-Z]\w+)\s*\('
+)
+# JSDoc: @type {Foo} ... const foo = ...  (up to ~120 chars / ~3 lines between annotation and decl)
+_JSDOC_TYPE_RE = re.compile(
+    r'@type\s*\{\s*([A-Z]\w+)[^}]*\}[\s\S]{0,120}?(?:const|let|var)\s+(\w+)'
+)
+# Singleton / factory: const foo = Foo.getInstance() / Foo.create() / Foo.shared etc.
+_SINGLETON_INSTANCE_RE = re.compile(
+    r'(?:const|let|var)\s+(\w+)\s*=\s*([A-Z]\w+)'
+    r'\.(?:getInstance|getDefault|getShared|create|instance|shared)\s*\('
+)
+# Context destructuring: const { foo, bar: localBar } = ctx / context / req / request
+_CTX_DESTRUCTURE_RE = re.compile(
+    r'(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(?:ctx|context|req|request)\b'
+)
+# Constructor injection: this.foo = foo  (heuristic: capitalize(foo) → Foo)
+# Only when property name equals the assigned name (standard DI pattern)
+_THIS_PARAM_ASSIGN_RE = re.compile(
+    r'this\.([a-z]\w+)\s*=\s*([a-z]\w+)\s*[;,\n\r]'
+)
+
+# Class names that are JS builtins — skip when scanning for service calls
+_SKIP_CLASS_NAMES = frozenset({
+    'Promise', 'Object', 'Array', 'JSON', 'Math', 'Error', 'Date',
+    'String', 'Number', 'Boolean', 'console', 'process', 'module',
+    'require', 'exports',
+})
+# Instance variable names that are framework-injected — skip for service resolution
+_SKIP_INSTANCE_NAMES = frozenset({
+    'ctx', 'context', 'this', 'req', 'res', 'next',
+    'console', 'process', 'module',
+})
 
 # Variable names that typically carry the Apollo Server typeDefs
 _TYPEDEFS_VAR_NAMES = frozenset({'typedefs', 'type_defs', 'types', 'schema'})
@@ -459,37 +524,436 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
         if not found:
             return
 
+        # Build import_map and var_type_map from source text for service resolution
+        source_text = self._get_source_text(jsContent)
+        file_path = None
+        try:
+            file_path = str(jsContent.get_file().get_path())
+        except Exception:
+            pass
+        import_map = self._build_import_map(source_text)
+        var_type_map = self._build_var_type_map(source_text)
+
+        log.info('[GraphQL NodeJs] _extract_resolvers: file=' + str(file_path)
+                 + ' resolvers_found=' + str(len(found))
+                 + ' source_text=' + ('None' if source_text is None
+                                      else str(len(source_text)) + 'chars')
+                 + ' import_map=' + str(len(import_map or {}))
+                 + ' var_type_map=' + str(len(var_type_map or {}))
+                 + ' context_key_map=' + str(len(self._context_key_to_class)))
+
         # Dedup within file: keep first occurrence of each (op_type, field_name)
         seen = set()
+        _diag_body_ok = 0
+        _diag_body_empty = 0
         for op_type, field_name, key_node, value_node in found:
             pair = (op_type, field_name)
             if pair not in seen:
                 seen.add(pair)
+                field_body = self._body_text_from_value_node(value_node, source_text)
+                if field_body:
+                    _diag_body_ok += 1
+                else:
+                    _diag_body_empty += 1
+                    # Diagnostic: why is body empty?
+                    try:
+                        bl = value_node.get_begin_line()
+                    except Exception:
+                        bl = '(exception)'
+                    log.info('[GraphQL NodeJs] DIAG empty body for '
+                             + op_type + '.' + field_name
+                             + ' begin_line=' + str(bl)
+                             + ' source_text=' + ('None' if source_text is None
+                                                  else str(len(source_text)) + 'chars')
+                             + ' value_node_type=' + str(type(value_node).__name__))
                 self._create_resolver(op_type, field_name, key_node,
-                                      value_node, jsContent)
+                                      value_node, jsContent,
+                                      import_map, var_type_map, file_path,
+                                      field_body=field_body)
+        if found:
+            log.info('[GraphQL NodeJs] _extract_resolvers file=' + str(file_path)
+                     + ' total=' + str(len(seen))
+                     + ' body_ok=' + str(_diag_body_ok)
+                     + ' body_empty=' + str(_diag_body_empty)
+                     + ' source_text=' + ('None' if source_text is None
+                                          else str(len(source_text)) + 'chars'))
 
-    def _extract_service_call(self, value_node):
+    def _build_import_map(self, source_text):
+        """Build {ClassName: relative_path} from ES6 imports and CommonJS requires."""
+        import_map = {}
+        if not source_text:
+            return import_map
+        # ES6 imports
+        for m in _ES6_IMPORT_RE.finditer(source_text):
+            named_group = m.group(1)   # e.g. "UserService, AdminService as AS"
+            default_name = m.group(2)  # default import
+            path = m.group(3)
+            if named_group:
+                for part in named_group.split(','):
+                    part = part.strip()
+                    if ' as ' in part:
+                        local_name = part.split(' as ', 1)[1].strip()
+                    else:
+                        local_name = part
+                    if local_name and local_name[0].isupper():
+                        import_map[local_name] = path
+            elif default_name and default_name[0].isupper():
+                import_map[default_name] = path
+        # CommonJS requires
+        for m in _CJS_REQUIRE_RE.finditer(source_text):
+            named_group = m.group(1)
+            single_name = m.group(2)
+            path = m.group(3)
+            if named_group:
+                for part in named_group.split(','):
+                    part = part.strip()
+                    if ' as ' in part:
+                        local_name = part.split(' as ', 1)[1].strip()
+                    else:
+                        local_name = part
+                    if local_name and local_name[0].isupper():
+                        import_map[local_name] = path
+            elif single_name and single_name[0].isupper():
+                import_map[single_name] = path
+        return import_map
+
+    def _build_var_type_map(self, source_text):
         """
-        Extract (serviceClass, serviceMethod) from a resolver function body.
+        Build {instanceVar: ClassName} from as many JS patterns as are regex-detectable.
 
-        For JS resolvers, looks for  ctx.serviceName.methodName(  patterns.
-        Resolves the context key to a class name via self._context_key_to_class.
+        Sources (first-seen wins; applied in precedence order):
+          1. const/let/var foo = new Foo()      — direct instantiation
+          2. this.foo = new Foo()               — constructor body assignment
+          3. @type {Foo} ... const foo = ...    — JSDoc type annotation
+          4. const foo = Foo.getInstance()      — singleton / factory
+          5. const { foo } = ctx               — context destructuring
+          6. this.foo = foo  (same name)        — constructor DI heuristic
+        """
+        var_type_map = {}
+        if not source_text:
+            return var_type_map
 
-        Returns (serviceClass, serviceMethod) or (None, None).
+        def _add(var_name, cls_name, src):
+            """Insert into map (first-seen wins) and log each new entry."""
+            try:
+                if var_name and cls_name and var_name not in var_type_map:
+                    var_type_map[var_name] = cls_name
+                    log.info('[GraphQL NodeJs] var_type_map %-16s %s → %s'
+                             % (src, var_name, cls_name))
+            except Exception as e:
+                log.warning('[GraphQL NodeJs] var_type_map _add error (%s): %s' % (src, e))
+
+        # ── Source 1: const/let/var foo = new Foo() ──────────────────────────
+        try:
+            for m in _NEW_INSTANCE_RE.finditer(source_text):
+                _add(m.group(1), m.group(2), '[new]')
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] var_type_map source1 (new): ' + str(e))
+
+        # ── Source 2: this.foo = new Foo() ───────────────────────────────────
+        # Adds both bare 'foo' (for local calls) and 'this.foo' (for class methods).
+        try:
+            for m in _THIS_NEW_INSTANCE_RE.finditer(source_text):
+                prop, cls = m.group(1), m.group(2)
+                _add(prop,           cls, '[this.new]')
+                _add('this.' + prop, cls, '[this.new]')
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] var_type_map source2 (this.new): ' + str(e))
+
+        # ── Source 3: JSDoc  @type {Foo} … const foo = … ─────────────────────
+        try:
+            for m in _JSDOC_TYPE_RE.finditer(source_text):
+                _add(m.group(2), m.group(1), '[jsdoc]')
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] var_type_map source3 (jsdoc): ' + str(e))
+
+        # ── Source 4: Foo.getInstance() / Foo.create() / etc. ────────────────
+        try:
+            for m in _SINGLETON_INSTANCE_RE.finditer(source_text):
+                _add(m.group(1), m.group(2), '[singleton]')
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] var_type_map source4 (singleton): ' + str(e))
+
+        # ── Source 5: const { foo, bar: localBar } = ctx / context ───────────
+        # Class resolved from Phase-0 _context_key_to_class; PascalCase fallback.
+        try:
+            for m in _CTX_DESTRUCTURE_RE.finditer(source_text):
+                try:
+                    for part in m.group(1).split(','):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        if ':' in part:
+                            orig_key, local_name = (p.strip() for p in part.split(':', 1))
+                        else:
+                            orig_key = local_name = part
+                        if not orig_key or not local_name:
+                            continue
+                        cls_name = self._context_key_to_class.get(orig_key)
+                        if not cls_name:
+                            # PascalCase heuristic: accountService → AccountService
+                            cls_name = orig_key[0].upper() + orig_key[1:]
+                        _add(local_name, cls_name, '[ctx-destr]')
+                except Exception as e:
+                    log.warning('[GraphQL NodeJs] var_type_map source5 inner: ' + str(e))
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] var_type_map source5 (ctx-destructure): ' + str(e))
+
+        # ── Source 6: this.foo = foo  (constructor DI, same name on both sides) ──
+        # Heuristic: capitalize param name → class guess (fooService → FooService).
+        try:
+            for m in _THIS_PARAM_ASSIGN_RE.finditer(source_text):
+                prop_name, param_name = m.group(1), m.group(2)
+                if prop_name == param_name:
+                    cls_guess = param_name[0].upper() + param_name[1:]
+                    _add(prop_name,           cls_guess, '[ctor-di]')
+                    _add('this.' + prop_name, cls_guess, '[ctor-di]')
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] var_type_map source6 (ctor-di): ' + str(e))
+
+        # ── Summary ──────────────────────────────────────────────────────────
+        if var_type_map:
+            pairs = ', '.join(k + '→' + v for k, v in list(var_type_map.items())[:8])
+            log.info('[GraphQL NodeJs] var_type_map: %d entries — %s'
+                     % (len(var_type_map), pairs))
+        else:
+            log.info('[GraphQL NodeJs] var_type_map: empty (no instance patterns found)')
+
+        return var_type_map
+
+    def _resolve_service_file(self, class_name, import_map, file_path):
+        """Resolve class_name to an absolute service file path via import_map."""
+        if not import_map or not file_path:
+            return None
+        relative_path = import_map.get(class_name)
+        if not relative_path:
+            return None
+        resolver_dir = os.path.dirname(file_path)
+        for ext in ('', '.js', '/index.js'):
+            candidate = os.path.normpath(
+                os.path.join(resolver_dir, relative_path + ext))
+            if os.path.exists(candidate):
+                return candidate
+        # Fallback: assume .js extension even if file doesn't exist on disk
+        return os.path.normpath(os.path.join(resolver_dir, relative_path + '.js'))
+
+    def _extract_brace_content(self, text, brace_start):
+        """
+        Extract content between balanced braces starting at brace_start.
+        Returns the content string (excluding outer braces), or None if unbalanced.
+        Skips string literals to avoid false brace matches.
         """
         try:
-            body_text = str(value_node)
+            depth = 0
+            i = brace_start
+            while i < len(text):
+                ch = text[i]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return text[brace_start + 1:i]
+                elif ch in ('"', "'", '`'):
+                    quote = ch
+                    i += 1
+                    while i < len(text) and text[i] != quote:
+                        if text[i] == '\\':
+                            i += 1
+                        i += 1
+                i += 1
+            return None
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] _extract_brace_content: failed at pos '
+                        + str(brace_start) + ': ' + str(e))
+            return None
+
+    def _body_text_from_value_node(self, value_node, source_text, window=500):
+        """
+        Extract the resolver function body as raw source text.
+
+        Uses value_node.get_begin_line() to anchor into source_text, then
+        brace-matches for the full body — mirrors _extract_ts_resolvers in the TS
+        analyzer. Falls back to a 500-char slice for arrow functions without braces
+        (e.g. fieldName: (args) => expr).
+
+        Returns '' if position info is unavailable or source_text is None.
+        """
+        if not source_text:
+            log.info('[GraphQL NodeJs] _body_text_from_value_node: source_text is None/empty')
+            return ''
+        try:
+            begin_line = value_node.get_begin_line()
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] _body_text_from_value_node: '
+                        'get_begin_line() failed: ' + str(e))
+            return ''
+        if not begin_line or begin_line < 1:
+            log.info('[GraphQL NodeJs] _body_text_from_value_node: '
+                     'invalid begin_line=' + str(begin_line))
+            return ''
+        try:
+            # Convert 1-indexed line number to char offset (same arithmetic as TS analyzer)
+            char_offset = 0
+            for i, line in enumerate(source_text.split('\n')):
+                if i + 1 >= begin_line:
+                    break
+                char_offset += len(line) + 1
+            remaining = source_text[char_offset:]
+            # Diagnostic: log first 200 chars of remaining to see what we're working with
+            log.info('[GraphQL NodeJs] _body_text_from_value_node: begin_line='
+                     + str(begin_line) + ' char_offset=' + str(char_offset)
+                     + ' remaining[:200]=' + repr(remaining[:200]))
+            # For arrow functions, skip past => to avoid matching parameter
+            # destructuring (e.g. { id } in `async (_, { id }, ctx) => { ... }`)
+            # as the function body.
+            arrow_pos = remaining.find('=>')
+            if arrow_pos != -1:
+                after_arrow = remaining[arrow_pos + 2:]
+                open_brace = after_arrow.find('{')
+                if open_brace != -1:
+                    body = self._extract_brace_content(after_arrow, open_brace)
+                    if body is not None:
+                        log.info('[GraphQL NodeJs] _body_text_from_value_node: '
+                                 'arrow-fn brace-matched body, len=' + str(len(body))
+                                 + ' (begin_line=' + str(begin_line) + ')')
+                        return body
+                    log.info('[GraphQL NodeJs] _body_text_from_value_node: '
+                             'unbalanced braces after => at begin_line=' + str(begin_line)
+                             + ' — falling back to ' + str(window) + '-char slice')
+                else:
+                    # Arrow function without braces (=> expr) — use slice after =>
+                    log.info('[GraphQL NodeJs] _body_text_from_value_node: '
+                             'arrow fn without braces at begin_line=' + str(begin_line)
+                             + ' — using ' + str(window) + '-char slice after =>')
+                    return after_arrow[:window]
+            # No arrow: regular function — first { is the body
+            open_brace = remaining.find('{')
+            if open_brace != -1:
+                body = self._extract_brace_content(remaining, open_brace)
+                if body is not None:
+                    log.info('[GraphQL NodeJs] _body_text_from_value_node: '
+                             'brace-matched body, len=' + str(len(body))
+                             + ' (begin_line=' + str(begin_line) + ')')
+                    return body
+                log.info('[GraphQL NodeJs] _body_text_from_value_node: '
+                         'unbalanced braces at begin_line=' + str(begin_line)
+                         + ' — falling back to ' + str(window) + '-char slice')
+            else:
+                log.info('[GraphQL NodeJs] _body_text_from_value_node: '
+                         'no opening brace at begin_line=' + str(begin_line)
+                         + ' (arrow fn?) — using ' + str(window) + '-char slice')
+            # Fallback: fixed slice for bodyless arrow functions (=> expr)
+            return remaining[:window]
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] _body_text_from_value_node: '
+                        'body extraction failed at begin_line=' + str(begin_line)
+                        + ': ' + str(e))
+            return ''
+
+    def _extract_service_call(self, field_body,
+                              import_map=None, var_type_map=None, file_path=None):
+        """
+        Extract (serviceClass, serviceMethod, serviceFilePath) from a resolver function body.
+
+        Priority 1 — Direct class call: ClassName.methodName(
+        Priority 2 — Instance call:     instanceVar.methodName(  resolved via var_type_map
+        Priority 3 — Context fallback:  ctx/context.key.methodName(  resolved via _context_key_to_class
+
+        Returns (serviceClass, serviceMethod, serviceFilePath), any element may be None.
+        """
+        try:
+            body_text = field_body or ''
+            if not body_text:
+                log.info('[GraphQL NodeJs] _extract_service_call: empty field_body')
+                return (None, None, None)
+
+            # Priority 1 — Direct class call (UpperCamelCase.method)
+            # Guard: class must be in import_map (when available) to avoid false positives
+            # like Error.captureStackTrace( or Symbol.iterator( blocking P2/P3.
+            m = _JS_DIRECT_CLASS_RE.search(body_text)
+            if m:
+                cls_name = m.group(1)
+                method_name = m.group(2)
+                if cls_name in _SKIP_CLASS_NAMES:
+                    log.info('[GraphQL NodeJs] service_call: P1 skipped builtin '
+                             + cls_name)
+                elif import_map is not None and cls_name not in import_map:
+                    log.info('[GraphQL NodeJs] service_call: P1 skipped "{}" '
+                             '(not in import_map) — trying P2/P3'.format(cls_name))
+                else:
+                    service_file_path = self._resolve_service_file(
+                        cls_name, import_map, file_path)
+                    log.info('[GraphQL NodeJs] service_call: P1 {}.{} → {}'.format(
+                             cls_name, method_name, service_file_path))
+                    return (cls_name, method_name, service_file_path)
+
+            # Priority 2a — this.property.method(  (class method body calling injected service)
+            if var_type_map:
+                m = _JS_THIS_INSTANCE_CALL_RE.search(body_text)
+                if m:
+                    prop_name = m.group(1)
+                    method_name = m.group(2)
+                    cls_name = var_type_map.get('this.' + prop_name) or var_type_map.get(prop_name)
+                    if cls_name:
+                        service_file_path = self._resolve_service_file(
+                            cls_name, import_map, file_path)
+                        log.info('[GraphQL NodeJs] _extract_service_call P2a this.'
+                                 + prop_name + '→' + cls_name + '.' + method_name
+                                 + ' → ' + str(service_file_path))
+                        return (cls_name, method_name, service_file_path)
+                    else:
+                        log.info('[GraphQL NodeJs] _extract_service_call P2a: this.'
+                                 + prop_name + ' not in var_type_map')
+
+            # Priority 2 — Instance call (lowerCase.method) resolved via var_type_map
+            if var_type_map:
+                m = _JS_INSTANCE_CALL_RE.search(body_text)
+                if m:
+                    instance_var = m.group(1)
+                    method_name = m.group(2)
+                    if instance_var not in _SKIP_INSTANCE_NAMES:
+                        cls_name = var_type_map.get(instance_var)
+                        if cls_name:
+                            service_file_path = self._resolve_service_file(
+                                cls_name, import_map, file_path)
+                            log.info('[GraphQL NodeJs] _extract_service_call P2: '
+                                     + instance_var + '→' + cls_name + '.' + method_name
+                                     + ' → ' + str(service_file_path))
+                            return (cls_name, method_name, service_file_path)
+                        else:
+                            log.info('[GraphQL NodeJs] _extract_service_call P2: '
+                                     + instance_var + ' not in var_type_map '
+                                     + str(list(var_type_map.keys())[:10]))
+                    else:
+                        log.info('[GraphQL NodeJs] _extract_service_call P2: skipped '
+                                 + instance_var + ' (framework var)')
+
+            # Priority 3 — Fallback: ctx/context.key.method(
             m = _JS_SERVICE_CALL_RE.search(body_text)
             if m:
                 ctx_key = m.group(1)
                 method = m.group(2)
-                cls = self._context_key_to_class.get(ctx_key, ctx_key)
-                return (cls, method)
-        except Exception:
-            pass
-        return (None, None)
+                cls = self._context_key_to_class.get(ctx_key)
+                if not cls:
+                    # PascalCase heuristic: userService → UserService
+                    cls = ctx_key[0].upper() + ctx_key[1:] if ctx_key else ctx_key
+                log.info('[GraphQL NodeJs] _extract_service_call P3 ctx: '
+                         + ctx_key + '→' + cls + '.' + method)
+                return (cls, method, None)
 
-    def _create_resolver(self, op_type, field_name, ast_node, value_node, jsContent):
+            log.info('[GraphQL NodeJs] _extract_service_call: no match. '
+                     'import_map keys=' + str(list((import_map or {}).keys())[:10])
+                     + ' var_type_map keys=' + str(list((var_type_map or {}).keys())[:10])
+                     + ' body[:120]=' + repr(body_text[:120]))
+
+        except Exception as e:
+            log.warning('[GraphQL NodeJs] _extract_service_call: unexpected error: ' + str(e))
+        return (None, None, None)
+
+    def _create_resolver(self, op_type, field_name, ast_node, value_node, jsContent,
+                         import_map=None, var_type_map=None, file_path=None,
+                         field_body=None):
         """Create a JsNodeJsResolver* KB object for one resolver function."""
         try:
             parent_kb = jsContent.get_kb_object()
@@ -500,9 +964,18 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
             # Determine the correct KB type
             resolver_type = _OPERATION_TYPE_TO_JS_TYPE.get(op_type, 'JsNodeJsResolverCustom')
 
+            try:
+                begin_line = ast_node.get_begin_line()
+            except Exception as bl_e:
+                log.warning('[GraphQL NodeJs] _create_resolver: get_begin_line() failed for "'
+                            + op_type + '.' + field_name + '": ' + str(bl_e))
+                begin_line = None
+            fullname = (file_path or '') + ':' + str(begin_line)
+
             obj = CustomObject()
             obj.set_name(field_name)
             obj.set_type(resolver_type)
+            obj.set_fullname(fullname)
             obj.set_parent(parent_kb)
             obj.save()
 
@@ -516,11 +989,14 @@ class GraphQLNodeJsAnalyzer(ua.Extension):
             obj.save_property('GraphQL_NodeJs_Resolver.fieldName', field_name)
 
             # Extract service call info from resolver body
-            service_class, service_method = self._extract_service_call(value_node)
+            service_class, service_method, service_file_path = self._extract_service_call(
+                field_body, import_map, var_type_map, file_path)
             if service_class:
                 obj.save_property('GraphQL_NodeJs_Resolver.serviceClass', service_class)
             if service_method:
                 obj.save_property('GraphQL_NodeJs_Resolver.serviceMethod', service_method)
+            if service_file_path:
+                obj.save_property('GraphQL_NodeJs_Resolver.serviceFilePath', service_file_path)
 
             self._created += 1
             log.info('[GraphQL NodeJs] Created ' + resolver_type + ': '

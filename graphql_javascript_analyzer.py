@@ -908,17 +908,16 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 return obj
 
         # 2. Import-aware cross-file lookup
+        # No export guard here: the presence of an explicit import statement
+        # (recorded in imported_var_to_file) is sufficient authorization for the link.
+        # Export detection for "export { FOO, BAR }" blocks is unreliable in CAST's
+        # HTML5 parser, so we trust the import map instead.
         if file_path:
             import_entry = self.imported_var_to_file.get((file_path, var_name))
             if import_entry is not None:
                 source_path, original_name = import_entry
                 obj = self.gql_obj_by_file_var.get((source_path, original_name))
                 if obj is not None:
-                    fv_key = (source_path, original_name)
-                    if fv_key not in self.exported_gql_fv_keys:
-                        _glog('RESOLVE', 'Hook', _ctx(),
-                              '{} → BLOCKED (not exported, file={})'.format(var_name, source_path))
-                        return None
                     _glog('RESOLVE', 'Hook', _ctx(),
                           '{} → {} via import from {} (original={})'.format(
                               var_name, obj.get_name() if hasattr(obj, 'get_name') else '?',
@@ -1069,13 +1068,8 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     source_path, original_name = import_entry
                     candidate = self.gql_obj_by_file_var.get((source_path, original_name))
                     if candidate is not None:
-                        fv_key = (source_path, original_name)
-                        if fv_key in self.exported_gql_fv_keys:
-                            resolved_obj = candidate
-                        else:
-                            _glog('RESOLVE', 'Hook', _ctx(),
-                                  '{} → BLOCKED in pending (not exported, file={})'.format(
-                                      var_name, source_path))
+                        # No export guard: import statement is sufficient authorization.
+                        resolved_obj = candidate
 
             if resolved_obj is not None:
                 try:
@@ -1084,6 +1078,7 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                         resolved_obj.get_name() if hasattr(resolved_obj, 'get_name') else var_name))
                 except Exception as e:
                     log.warning('[GraphQL][JS] pending useLink failed for "{}": {}'.format(var_name, str(e)))
+                    still.append(entry)  # link failed — fall through to JsGqlUnresolvedDefinition
             else:
                 still.append(entry)
 
@@ -1099,8 +1094,16 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     missing = CustomObject()
                     missing.set_name(lookup_key)
                     missing.set_type('JsGqlUnresolvedDefinition')
-                    if caller_kb:
-                        missing.set_parent(caller_kb)
+                    # Use caller_kb (consumer file) as parent; fall back to hook's own parent
+                    # if caller_kb is None (prevents save() failing with no-parent error).
+                    parent_for_unresolved = caller_kb
+                    if parent_for_unresolved is None:
+                        try:
+                            parent_for_unresolved = hook_obj.get_parent()
+                        except Exception:
+                            pass
+                    if parent_for_unresolved:
+                        missing.set_parent(parent_for_unresolved)
                     missing.save()
                     self.missing_gql_objects[lookup_key] = missing
                     _glog('RESULT', 'Object', _ctx(), 'JsGqlUnresolvedDefinition "{}" created'.format(lookup_key))
