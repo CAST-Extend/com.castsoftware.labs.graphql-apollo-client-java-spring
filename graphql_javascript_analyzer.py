@@ -996,7 +996,7 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                 except Exception:
                     fp = None
                 self.pending_links.append(
-                    (obj, var_name, jsContent.get_kb_object(), source_pattern, fp))
+                    (obj, var_name, jsContent.get_kb_object(), source_pattern, fp, bm))
                 _glog('RESULT', 'Hook', _c, '{} → pending (cross-file)'.format(hook_name))
 
         except Exception as e:
@@ -1045,12 +1045,15 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
 
         still = []
         for entry in self.pending_links:
-            # Backward-compat: old tuples have 4 elements, new ones have 5
-            if len(entry) == 5:
+            # Backward-compat: old tuples have 4 or 5 elements, new ones have 6
+            if len(entry) == 6:
+                hook_obj, var_name, caller_kb, source_pattern, fp, hook_bm = entry
+            elif len(entry) == 5:
                 hook_obj, var_name, caller_kb, source_pattern, fp = entry
+                hook_bm = None
             else:
                 hook_obj, var_name, caller_kb, source_pattern = entry
-                fp = None
+                fp, hook_bm = None, None
 
             resolved_obj = None
 
@@ -1084,10 +1087,11 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
 
         # Create JsGqlUnresolvedDefinition objects for hooks whose GQL def was never found
         for entry in still:
+            hook_obj = entry[0]
             var_name = entry[1]
             caller_kb = entry[2]
             source_pattern = entry[3]
-            hook_obj = entry[0]
+            hook_bm = entry[5] if len(entry) >= 6 else None
             lookup_key = self._resolve_lookup_key(var_name, source_pattern)
             if lookup_key not in self.missing_gql_objects:
                 try:
@@ -1105,6 +1109,11 @@ class GraphQLJavascriptAnalyzer(ua.Extension):
                     if parent_for_unresolved:
                         missing.set_parent(parent_for_unresolved)
                     missing.save()
+                    if hook_bm:
+                        try:
+                            missing.save_position(hook_bm)
+                        except Exception:
+                            pass
                     self.missing_gql_objects[lookup_key] = missing
                     _glog('RESULT', 'Object', _ctx(), 'JsGqlUnresolvedDefinition "{}" created'.format(lookup_key))
                 except Exception as e:

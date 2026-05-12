@@ -1,5 +1,45 @@
 # small_app_test Generation Prompt
 
+## ✅ STATUS — PART 1 COMPLETE (36 files / ~1,600 lines)
+
+Part 1 (Batches 1–11) has been fully generated. The 36 files listed below exist.
+**Current total: ~1,600 lines. Target: 45,000–50,000 lines. Remaining: ~43,400 lines across 6 parts.**
+
+### Generated files (DO NOT regenerate):
+```
+small_app_test/
+  database/schema.sql
+  server/schemas/user.graphql, post.graphql, comment.graphql
+  server/ts/services/user.service.ts, post.service.ts, comment.service.ts
+  server/ts/resolvers/user.resolver.ts, post.resolver.ts, comment.resolver.ts
+  server/ts/server.ts
+  server/js/services/user.service.js, post.service.js, comment.service.js
+  server/js/resolvers/user.resolver.js, post.resolver.js, comment.resolver.js
+  server/js/server.js
+  client/shared/queries-ts/user.queries.ts, post.queries.ts, comment.queries.ts
+  client/react-js/shared/queries-js/user.queries.js, post.queries.js, comment.queries.js
+  client/react-ts/components/UserList.tsx, PostList.tsx, CommentList.tsx
+  client/react-ts/hooks/useUserData.ts
+  client/react-ts/context/ApolloContext.tsx
+  client/react-js/components/UserList.jsx, PostList.jsx
+  client/angular-ts/services/user.service.ts, post.service.ts
+  client/angular-ts/components/user-list/user-list.component.ts
+  client/angular-js/services/user.service.js
+  TRANSACTIONS.md
+```
+
+### Remaining parts (use one chat per part — each file below is standalone):
+- `SMALL_APP_TEST_PART2.md` — 10 new entity schemas + TS services + TS resolvers (~9,000 lines)
+- `SMALL_APP_TEST_PART3.md` — Shared queries TS + React TS components for new entities (~9,000 lines)
+- `SMALL_APP_TEST_PART4.md` — Shared queries JS + React JS components for new entities (~9,000 lines)
+- `SMALL_APP_TEST_PART5.md` — Angular TS services + components + guards/interceptors/modules (~8,400 lines)
+- `SMALL_APP_TEST_PART6.md` — JS server + JS resolvers + JS services for new entities (~6,300 lines)
+- `SMALL_APP_TEST_PART7.md` — Angular JS services + React TS hooks + fragments + extras (~6,600 lines)
+
+---
+
+## ORIGINAL PART 1 PROMPT (already executed — do not re-run)
+
 Create the directory `small_app_test/` in the repo root of `c:\Cast\GraphQL\com.castsoftware.uc.graphql`
 and generate the following files. Do NOT skip any file. Generate them in the batch order below.
 Each batch is independently executable. After each batch, verify the files exist before proceeding.

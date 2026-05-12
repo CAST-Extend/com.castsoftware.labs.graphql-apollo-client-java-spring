@@ -675,13 +675,14 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 request_obj.save_property('GraphQL_Hook_Request.hookType', hook_name)
 
             # Step 8: Create bookmark and CALL link (component -> request)
+            hook_bookmark = None
             try:
                 if hook.raw_bookmark:
-                    bookmark = hook.raw_bookmark.get_bookmark()
-                    if bookmark:
-                        request_obj.save_position(bookmark)
+                    hook_bookmark = hook.raw_bookmark.get_bookmark()
+                    if hook_bookmark:
+                        request_obj.save_position(hook_bookmark)
                         try:
-                            create_link("callLink", parent_kb, request_obj, bookmark)
+                            create_link("callLink", parent_kb, request_obj, hook_bookmark)
                         except Exception as link_ex:
                             log.warning('[GraphQL][TS] callLink failed for "{}": {}'.format(unique_request_name, str(link_ex)))
             except Exception as e:
@@ -698,7 +699,7 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 resolved_obj = self._resolve_gql_for_hook(operation_name, hook_ps, fp)
                 if resolved_obj == 'PENDING' or resolved_obj is None:
                     self.pending_links.append(
-                        (request_obj, operation_name, source_file.get_kb_object(), source_pattern, hook_ps, fp))
+                        (request_obj, operation_name, source_file.get_kb_object(), source_pattern, hook_ps, fp, hook_bookmark))
                     if resolved_obj is None:
                         _glog('RESOLVE', 'Hook', _c, '{} → UNRESOLVED (pending)'.format(operation_name))
                 else:
@@ -1035,13 +1036,14 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
             self.failed_objects.append({
                 'name': field_name, 'type': 'TsNodeJsResolver*', 'file_path': file_path})
 
-    def _create_missing_gql_definition(self, request_obj, operation_name, caller_file_kb):
+    def _create_missing_gql_definition(self, request_obj, operation_name, caller_file_kb, hook_bookmark=None):
         """
         Create (or reuse) a TsGqlUnresolvedDefinition object for a hook whose GQL definition
         was never found in any analyzed file.
 
         Deduplication: one object per operation_name regardless of how many hooks reference it.
         All hooks get a useLink to the same object.
+        The bookmark of the first referencing hook is saved as the object's source position.
         """
         try:
             if operation_name not in self.missing_gql_objects:
@@ -1052,6 +1054,11 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                 if caller_file_kb:
                     missing_obj.set_parent(caller_file_kb)
                 missing_obj.save()
+                if hook_bookmark:
+                    try:
+                        missing_obj.save_position(hook_bookmark)
+                    except Exception:
+                        pass
                 self.missing_gql_objects[operation_name] = missing_obj
                 self.created_objects.append({'name': operation_name, 'type': 'TsGqlUnresolvedDefinition',
                                              'file_path': str(caller_file_kb)})
@@ -1087,14 +1094,17 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
         if self.pending_links:
             still_unresolved = []
             for entry in self.pending_links:
-                if len(entry) == 6:
+                if len(entry) == 7:
+                    request_obj, operation_name, caller_file_kb, source_pattern, hook_ps, fp, hook_bm = entry
+                elif len(entry) == 6:
                     request_obj, operation_name, caller_file_kb, source_pattern, hook_ps, fp = entry
+                    hook_bm = None
                 elif len(entry) == 4:
                     request_obj, operation_name, caller_file_kb, source_pattern = entry
-                    hook_ps, fp = None, None
+                    hook_ps, fp, hook_bm = None, None, None
                 else:
                     request_obj, operation_name, caller_file_kb = entry
-                    source_pattern, hook_ps, fp = 'react_hook', None, None
+                    source_pattern, hook_ps, fp, hook_bm = 'react_hook', None, None, None
 
                 resolved_obj = self._resolve_gql_for_hook(operation_name, hook_ps, fp)
                 # At on_end time all files are processed, so 'PENDING' is treated as unresolved.
@@ -1106,9 +1116,9 @@ class GraphQLTypeScriptAnalyzer(ua.Extension):
                         log.warning('[GraphQL][TS] pending useLink failed for "{}": {}'.format(
                             operation_name, str(link_ex)))
                 else:
-                    still_unresolved.append((request_obj, operation_name, caller_file_kb, source_pattern))
-            for (request_obj, operation_name, caller_file_kb, _) in still_unresolved:
-                self._create_missing_gql_definition(request_obj, operation_name, caller_file_kb)
+                    still_unresolved.append((request_obj, operation_name, caller_file_kb, hook_bm))
+            for (request_obj, operation_name, caller_file_kb, hook_bm) in still_unresolved:
+                self._create_missing_gql_definition(request_obj, operation_name, caller_file_kb, hook_bm)
             self.pending_links = []  # free memory — on_end is the real finish point
 
         # ── End-of-analysis summary ────────────────────────────────────────────
