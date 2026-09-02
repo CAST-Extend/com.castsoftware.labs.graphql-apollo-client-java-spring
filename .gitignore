@@ -1,32 +1,61 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 *.so
+
+# ─── Build artefacts ──────────────────────────────────────────────────────────
 *.nupkg
+
+# ─── Logs & scan output ───────────────────────────────────────────────────────
 *.log
+logs_scan/
+
+# ─── IDE / tooling ────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 .claude/
+.github/
 *.swp
 *.swo
 *~
-ressources/
-big_app_test/
-small_app_test/
-.github/
+
+# ─── Vendored CAST light_parser copy at repo root (see PROVENANCE.md) ─────────
+# Not versioned on purpose: it is a byte-identical copy of
+# typescript_dependencies/typescript_parser/light_parser/__init__.py
 __init__.py
+
+# ─── AI assistant working documents (local only) ──────────────────────────────
 CLAUDE.md
 MEMORY.md
 AI_CONTEXT.md
 COPILOT_INSTRUCTIONS.md
-EXTENSION_SDK_DEV_REQUIREMENTS.md
+
+# ─── Generated test applications (too large to version) ───────────────────────
+big_app_test/
+small_app_test/
+ressources/
+SMALL_APP_TEST_GENERATION_PROMPT.md
 SMALL_APP_TEST_PART2.md
 SMALL_APP_TEST_PART3.md
 SMALL_APP_TEST_PART4.md
 SMALL_APP_TEST_PART5.md
 SMALL_APP_TEST_PART6.md
 SMALL_APP_TEST_PART7.md
-SMALL_APP_TEST_GENERATION_PROMPT.md
+
+# ─── Local architecture notes (superseded by README.md) ───────────────────────
 docs/
+
+# ─── Guard: personal / unrelated files must never land in this repo ───────────
+# (job-search artefacts from an unrelated tool ended up here once; moved to
+#  ../_perso/ on 2026-09-02 — these patterns stop it happening again)
+_perso/
+.playwright-mcp/
+job*
+jobs*
+search*
+snap-*
+pwc_*
+*.docx
