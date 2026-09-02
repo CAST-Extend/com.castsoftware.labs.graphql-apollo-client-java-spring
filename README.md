@@ -1,356 +1,277 @@
-# GraphQL Universal Analyzer Extension
+# GraphQL for Apollo (TypeScript, JavaScript, Node.js) and Java Spring
 
-**Version:** 1.0.0  
-**Author:** CAST  
-**Namespace:** labs
+**Extension id:** `com.castsoftware.labs.graphql-apollo-client-java-spring`
+**Version:** 1.3.15
+**Type:** CAST Universal Analyzer extension (analysis level + application level)
+**Status:** functional, last verified end-to-end against a real Knowledge Base in **May 2026** on
+AIP Core 8.3.x. **Not yet re-verified on CAST Imaging v3** — see [Verification status](#verification-status).
 
 ---
 
 ## Overview
 
-This CAST Universal Analyzer extension provides automated analysis of **GraphQL** applications including schema files and client-side code. It identifies GraphQL structures and creates call relationships to enable full-stack software architecture analysis in CAST Imaging.
+This extension makes GraphQL traffic visible in CAST Imaging. It detects where an application
+*calls* GraphQL, where the GraphQL *schema* is defined, and where each operation is *implemented*
+on the backend — then links the three together so a transaction can be followed from a React
+component down to a Java method or a Node.js service call.
 
-**Supported Architecture:** This extension supports **frontend JavaScript to backend Java communication through GraphQL** using **Apollo Client** hooks (`useQuery`, `useLazyQuery`, `useMutation`, `useSubscription`). **Apollo Server is not supported** - only the client-side Apollo Client library for making GraphQL requests.
+```
+┌─────────────────────┐   useLink    ┌──────────────────┐   useLink   ┌──────────────┐
+│  Apollo call site   │─────────────▶│  gql definition  │────────────▶│ GraphQL      │
+│  useQuery(GET_USER) │              │  query GetUser   │             │ schema field │
+│  this.apollo.query  │              │  (TsGql*/JsGql*) │             │ Query.user   │
+│  client.mutate      │              └──────────────────┘             └──────┬───────┘
+│  useGetUserQuery()  │                                                      │ callLink
+└─────────────────────┘                                                      ▼
+        ▲ callLink                                          ┌───────────────────────────────┐
+        │                                                   │ Java Spring  @QueryMapping    │
+   parent component                                         │ Node.js resolver Query.user   │
+                                                            └───────────┬───────────────────┘
+                                                                        │ callLink
+                                                                        ▼
+                                                              service method (TS/JS)
+```
 
-### What This Extension Does
+### Supported source languages
 
-- ✅ **Schema Object Detection**: Extracts GraphQL types, queries, mutations from schema files
-- ✅ **Client-Side Linking**: Links React/Apollo Client code to GraphQL schema objects
-- ✅ **Backend Linking**: Links GraphQL schema fields to Java backend methods (resolvers)
-- ✅ **Smart Resolution**: Uses intelligent heuristics to match client operations to schema definitions
-
-### Supported File Extensions
-
-**Schema Files:** `*.graphql`, `*.gql`, `*.graphqls`  
-**Client Files:** `*.js`, `*.jsx`, `*.mjs`, `*.jsm`, `*.cjs` (via HTML5/JavaScript analyzer integration)
-
-**Note:** TypeScript files (`*.ts`, `*.tsx`) are **not yet supported**.
-
-### What's Supported vs. Not Supported
-
-**✅ Supported:**
-- Apollo Client hooks in JavaScript: `useQuery`, `useLazyQuery`, `useMutation`, `useSubscription`
-- GraphQL schema files (.graphql, .gql, .graphqls)
-- Frontend JavaScript → GraphQL schema → Backend Java transaction flow
-- Spring GraphQL backend with `@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`
-
-**❌ Not Yet Supported:**
-- TypeScript files (.ts, .tsx)
-- Apollo Server (server-side GraphQL implementation)
-- Other GraphQL client libraries (Relay, URQL, etc.)
-- Other backend frameworks (Node.js GraphQL servers, etc.)
+| Language | File extensions | Detection driven by |
+|---|---|---|
+| TypeScript | `.ts`, `.tsx` | events from `com.castsoftware.typescript` |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | events from `com.castsoftware.html5` |
+| GraphQL SDL | `.graphql`, `.gql`, `.graphqls` | this extension's own parser |
+| Java | — | read from the KB at application level (requires the Java analyzer) |
 
 ---
 
-## Supported Code Structures
+## Prerequisites
 
-This extension detects and analyzes the following GraphQL constructs:
+- **CAST AIP Core 8.3.3** or higher (declared in `plugin.nuspec`)
+- **`com.castsoftware.typescript`** — required for any `.ts` / `.tsx` detection
+- **`com.castsoftware.html5`** — required for any `.js` / `.jsx` detection
+- The **Java analyzer**, if you want the schema → Java Spring links
 
-### Schema Objects (from .graphql/.gql/.graphqls files)
-- **Program**: Top-level program definitions
-- **Schema**: Top-level schema definitions
-- **Type**: Type definitions within Schema
-- **Interface**: Interface definitions within Schema
-- **Enum**: Enumeration definitions within Schema
-- **EnumValue**: Enumeration value within Enum
-- **Input**: Input type definitions within Schema
-- **Union**: Union type definitions within Schema
-- **Scalar**: Scalar type definitions within Schema
-- **Directive**: Directive definitions within Schema
-- **Field**: Field within Type, Interface, Query, Mutation, or Subscription
-- **Argument**: Argument within Field
-- **Query**: Query operation definitions within Schema
-- **Mutation**: Mutation operation definitions within Schema
-- **Subscription**: Subscription operation definitions within Schema
-- **Fragment**: Fragment definitions within Schema
-- **Variable**: Variable definitions within operations
-
-### Client-Side Objects (from React/JavaScript code)
-
-#### Request Objects (Apollo Hook Calls) — TypeScript
-- **TsGraphQLApolloHookQuery**: Apollo `useQuery()` hook call (TS)
-- **TsGraphQLApolloHookLazyQuery**: Apollo `useLazyQuery()` hook call (TS)
-- **TsGraphQLApolloHookMutation**: Apollo `useMutation()` hook call (TS)
-- **TsGraphQLApolloHookSubscription**: Apollo `useSubscription()` hook call (TS)
-
-#### Request Objects (Apollo Hook Calls) — JavaScript
-- **JsGraphQLApolloHookQuery**: Apollo `useQuery()` hook call (JS)
-- **JsGraphQLApolloHookLazyQuery**: Apollo `useLazyQuery()` hook call (JS)
-- **JsGraphQLApolloHookMutation**: Apollo `useMutation()` hook call (JS)
-- **JsGraphQLApolloHookSubscription**: Apollo `useSubscription()` hook call (JS)
-
-#### Client Definition Objects (gql Templates) — TypeScript
-- **TsGqlQuery**: TypeScript client-side query definition (gql template)
-- **TsGqlMutation**: TypeScript client-side mutation definition (gql template)
-- **TsGqlSubscription**: TypeScript client-side subscription definition (gql template)
-
-#### Client Definition Objects (gql Templates) — JavaScript
-- **JsGqlQuery**: JavaScript client-side query definition (gql template)
-- **JsGqlMutation**: JavaScript client-side mutation definition (gql template)
-- **JsGqlSubscription**: JavaScript client-side subscription definition (gql template)
+> ⚠️ The two extension dependencies above are **not yet declared** in `plugin.nuspec` (a verified
+> minimum version is needed first). If they are absent from the installation, this extension
+> produces **no TypeScript and no JavaScript object at all**, and does so silently.
 
 ---
 
-## GraphQL Architecture
+## What is detected
 
-This extension creates a complete end-to-end analysis chain from React frontend to GraphQL schema to Java backend.
+### 1. `gql` template definitions
 
-### Complete Code Example
+Detected in both TypeScript and JavaScript, as a standalone constant or inline in the call:
 
-**Frontend (App.jsx) - React/Apollo Client:**
-```javascript
-import { gql, useQuery } from "@apollo/client";
+```ts
+const GET_USER = gql`query GetUser($id: ID!) { user(id: $id) { id name } }`;
 
-// gql template definition
-const GET_USERS = gql`
-  query GetUsers {
-    users { id name email }
-  }
-`;
+const GET_USER: TypedDocumentNode<Data, Vars> = gql`query GetUser { ... }`;   // colon annotation
 
-function App() {
-  // Apollo hook call
-  const { data } = useQuery(GET_USERS);
-  return <div>{/* render users */}</div>;
-}
+const GET_USER = gql`query GetUser { ... }` as TypedDocumentNode<Data, Vars>; // as-cast
+
+const GET_USER = useMemo(() => gql`query GetUser { ... }` as TypedDocumentNode<D, V>, [dep]);
+
+const { data } = useQuery(gql`query GetUser { ... }`);                        // inline
 ```
 
-**Schema (schema.graphqls) - GraphQL Schema:**
-```graphql
-type Query {
-  users: [User!]!
-}
+The KB object is named after the **GraphQL operation name** (`GetUser`), not the variable name.
+This keeps names unique when the same constant name is reused in several scopes, and makes
+schema matching direct (`operationName` == field name in `type Query`).
 
-type User {
-  id: ID!
-  name: String!
-  email: String!
-}
-```
+**Alias-aware:** the local name bound to the `gql` tag is resolved per file, so
+`import gqlTag from 'graphql-tag'` and `import { gql as gqlHelper } from '@apollo/client'`
+are both detected.
 
-**Backend (UserController.java) - Spring GraphQL:**
-```java
-@Controller
-public class UserController {
-    
-    @QueryMapping
-    public List<User> users() {
-        return userService.findAll();
-    }
-}
-```
+### 2. Apollo Client call sites
 
-### Links Created
+| Pattern | Example | TS object | JS object |
+|---|---|---|---|
+| React hook | `useQuery(GET_USER)` | `TsGraphQLApolloHookQuery` | `JsGraphQLApolloHookQuery` |
+| React hook | `useLazyQuery(SEARCH)` | `TsGraphQLApolloHookLazyQuery` | `JsGraphQLApolloHookLazyQuery` |
+| React hook | `useMutation(CREATE)` | `TsGraphQLApolloHookMutation` | `JsGraphQLApolloHookMutation` |
+| React hook | `useSubscription(ON_X)` | `TsGraphQLApolloHookSubscription` | `JsGraphQLApolloHookSubscription` |
+| Imperative | `client.query({ query: GET_USER })` | `TsGraphQLApolloClientQuery` | `JsGraphQLApolloClientQuery` |
+| Imperative | `client.mutate({ mutation: CREATE })` | `TsGraphQLApolloClientMutation` | `JsGraphQLApolloClientMutation` |
+| Imperative | `client.subscribe({ query: ON_X })` | `TsGraphQLApolloClientSubscription` | `JsGraphQLApolloClientSubscription` |
+| Angular | `this.apollo.query({ query: GET_USER })` | `TsGraphQLApolloAngularQuery` | `JsGraphQLApolloAngularQuery` |
+| Angular | `this.apollo.mutate({ mutation: CREATE })` | `TsGraphQLApolloAngularMutation` | `JsGraphQLApolloAngularMutation` |
+| Angular | `this.apollo.watchQuery({...}).valueChanges` | `TsGraphQLApolloAngularWatchQuery` | `JsGraphQLApolloAngularWatchQuery` |
+| Codegen | `useGetUserQuery()`, `useCreateUserMutation()` | `TsGraphQLApolloCodegenQuery` / `…Mutation` / `…Subscription` | same, `Js…` |
 
-```
-JavaScript Function "App" (in App.jsx)
-│
-├─ TsGraphQLApolloHookQuery "useQuery:GET_USERS"
-│  │  (Apollo hook call - transforms definition into HTTP request)
-│  │
-│  └─ [USE link]
-│     │
-│     ↓
-│  TsGqlQuery "GET_USERS"
-│     (gql template definition - describes data structure to fetch)
-│     │
-│     └─ [USE link]
-│        │
-│        ↓
-│     GraphQLQuery > Field "users"
-│        (schema.graphqls - backend field in Type Query)
-│        │
-│        └─ [CALL link]
-│           │
-│           ↓
-│        JV_METHOD users()
-│           (Java resolver method with @QueryMapping)
-```
+Whitespace and line breaks are irrelevant — the call may be written on one line or spread over
+several, with arbitrary indentation.
 
-### Frontend Objects Created
+### 3. Apollo Server (Node.js)
 
-The extension creates **GraphQL-specific objects** for React/Apollo Client code:
+| Pattern | Object created | TS | JS |
+|---|---|---|---|
+| `const resolvers = { Query: { user: () => … } }` | resolver | `TsNodeJsResolverQuery` | `JsNodeJsResolverQuery` |
+| `Mutation: { createUser: … }` | resolver | `TsNodeJsResolverMutation` | `JsNodeJsResolverMutation` |
+| `Subscription: { userUpdated: … }` | resolver | `TsNodeJsResolverSubscription` | `JsNodeJsResolverSubscription` |
+| field resolvers on a custom type (`User: { posts: … }`) | resolver | `TsNodeJsResolverCustom` | `JsNodeJsResolverCustom` |
+| `const typeDefs = gql\`type Query {…}\``, raw string, or `readFileSync('schema.graphql')` | schema | ❌ not implemented | `JsNodeJsApolloSchema` |
 
-#### 1. Request Objects (Hook Calls)
-- **TsGraphQLApolloHookQuery** - Created at `useQuery()` call site (TypeScript)
-- **TsGraphQLApolloHookLazyQuery** - Created at `useLazyQuery()` call site (TypeScript)
-- **TsGraphQLApolloHookMutation** - Created at `useMutation()` call site (TypeScript)
-- **TsGraphQLApolloHookSubscription** - Created at `useSubscription()` call site (TypeScript)
-- **JsGraphQLApolloHookQuery** - Created at `useQuery()` call site (JavaScript)
-- **JsGraphQLApolloHookLazyQuery** - Created at `useLazyQuery()` call site (JavaScript)
-- **JsGraphQLApolloHookMutation** - Created at `useMutation()` call site (JavaScript)
-- **JsGraphQLApolloHookSubscription** - Created at `useSubscription()` call site (JavaScript)
+Resolver bodies are scanned for the service call they delegate to
+(`ctx.userService.findById(...)`, `UserService.findById(...)`, `this.userService.findById(...)`),
+which is what produces the resolver → service link.
 
-#### 2. Client Definition Objects (gql Templates)
-- **TsGqlQuery** - Created at `gql` query definition (TypeScript)
-- **TsGqlMutation** - Created at `gql` mutation definition (TypeScript)
-- **TsGqlSubscription** - Created at `gql` subscription definition (TypeScript)
-- **JsGqlQuery** - Created at `gql` query definition (JavaScript)
-- **JsGqlMutation** - Created at `gql` mutation definition (JavaScript)
-- **JsGqlSubscription** - Created at `gql` subscription definition (JavaScript)
+### 4. GraphQL SDL schema files
 
-**Why we create these objects:**
-The HTML5/JavaScript analyzer does not support the Apollo Client framework used for GraphQL requests. It also does not create objects for `gql` template definitions. Without these custom GraphQL objects, there would be no way to link JavaScript code to GraphQL schema objects. Our extension bridges this gap by:
-- Creating GraphQL-specific objects (Request and Definition objects) for Apollo hooks and gql templates
-- Linking these custom objects to JavaScript objects created by the HTML5/JavaScript analyzer (e.g., functions, variables)
-- Linking these custom objects to GraphQL schema objects created by our GraphQL schema analyzer
-- Enabling end-to-end transaction analysis from React frontend through schema to Java backend
+`.graphql` / `.gql` / `.graphqls` files are parsed into a full object tree:
+`GraphQLProgram`, `GraphQLSchema`, `GraphQLType`, `GraphQLInterface`, `GraphQLEnum`,
+`GraphQLEnumValue`, `GraphQLInput`, `GraphQLUnion`, `GraphQLScalar`, `GraphQLDirective`,
+`GraphQLField`, `GraphQLArgument`, `GraphQLQuery`, `GraphQLMutation`, `GraphQLSubscription`,
+`GraphQLFragment`, `GraphQLVariable`.
 
-### Schema Objects Created
+### 5. Java Spring backend
 
-From `.graphql`/`.gql`/`.graphqls` files, the extension creates:
-- **GraphQLQuery** - Query type fields (e.g., "users")
-- **GraphQLMutation** - Mutation type fields (e.g., "createUser")
-- **GraphQLSubscription** - Subscription type fields
-- **GraphQLType** - Custom types (e.g., "User")
-- **GraphQLField** - Type fields (e.g., "id", "name", "email")
-- And other schema constructs (Interface, Enum, Input, etc.)
-
-### Backend Objects (Java)
-
-**Important:** The extension does **NOT** create any Java objects. It relies entirely on objects created by the **JEE Analyzer** (JV_METHOD, JV_CLASS, etc.) and creates links between GraphQL schema objects and these existing Java objects.
-
-The linking is done by:
-1. Detecting `@Controller` classes
-2. Finding methods with `@QueryMapping`, `@MutationMapping`, or `@SubscriptionMapping` annotations
-3. Matching method names to GraphQL schema field names
-4. Creating CALL links from GraphQL schema fields to Java methods
-
-### Complete Transaction Flow
-
-**End-to-end analysis example:**
-1. **Frontend**: User clicks button → triggers `useQuery(GET_USERS)` (GraphQLApolloHookQuery)
-2. **Client Definition**: Request uses `GET_USERS` gql template (TsGqlQuery / JsGqlQuery "GetUsers")
-3. **Schema**: Query asks for "users" field from Type Query (GraphQLQuery field "users")
-4. **Backend**: Field resolves to Java method `users()` with @QueryMapping (JV_METHOD)
-5. **Data flow**: Java method fetches data → returns to schema → returns to client → updates UI
-
-This enables **full-stack transaction analysis** in CAST Imaging from React UI → GraphQL operations → Backend resolvers.
+At application level, schema fields are matched by name to Java methods carrying
+`@QueryMapping`, `@MutationMapping` or `@SubscriptionMapping`.
 
 ---
 
-## Link Implementation Details
+## Links created
 
-### 1. Request/Definition → JavaScript Objects
+| Link | From → To | Created by |
+|---|---|---|
+| `callLink` | parent component/function → Apollo call site | analysis level (TS/JS) |
+| `useLink` | Apollo call site → `gql` definition | analysis level (TS/JS) |
+| `callLink` | codegen hook → generated wrapper function | analysis level (TS) |
+| `useLink` | `gql` definition → `GraphQLField` (schema) | application level |
+| `callLink` | `GraphQLField` → Java method (`@QueryMapping`, …) | application level |
+| `callLink` | `GraphQLField` → Node.js resolver | application level |
+| `callLink` | Node.js resolver → service method | application level |
 
-**Implementation:** `graphql_client_analyzer.py`
+### Resolution across files
 
-Client objects (TsGraphQLApolloHookQuery/JsGraphQLApolloHookQuery, TsGqlQuery/JsGqlQuery, etc.) are created as **children** of JavaScript objects. During object creation, links are established to JavaScript objects:
-- **CONTAINMENT** links: Request/Definition objects are children of JS objects
-- **CALL** links: If the parent JS object is a function
-- **USE** links: To JavaScript variables (e.g., linking TsGraphQLApolloHookQuery/JsGraphQLApolloHookQuery to the TsGqlQuery/JsGqlQuery referencing the gql template)
+A call site and the `gql` constant it uses are usually in different files. Resolution is
+attempted in three steps, in order:
 
-This file communicates with the HTML5/JavaScript analyzer using an **event-driven architecture** to:
-- Catch events from the HTML5/JS analyzer
-- Access the JavaScript AST (Abstract Syntax Tree)
-- Create GraphQL client objects
-- Establish containment and reference links to JS objects
+1. **Scoped, same file** — the scope chain is walked, so an inner declaration shadows an outer one.
+2. **Import-aware** — the `import { GET_USER } from './queries'` statement of the calling file is
+   resolved to the actual source file, including renamed imports (`as MY_QUERY`).
+3. **Global first-seen fallback** — for imports that cannot be resolved (re-exports, star imports).
 
-**Documentation:** For details on the event system, see [CAST HTML5/JavaScript Extension SDK](https://cast-projects.github.io/Extension-SDK/doc/html5.html?highlight=javascript)
-
-### 2. Client Definitions → Schema (USE Links)
-
-**Implementation:** `_link_client_to_schema()` in `graphql_application_level.py`
-
-**Matching logic:**
-- Parse the `gql` template to extract the root field being queried (e.g., "users" from `query GetUsers { users { ... } }`)
-- Match this field name to a corresponding GraphQLQuery/GraphQLMutation/GraphQLSubscription object in the schema
-- Create USE link: `TsGqlQuery/TsGqlMutation/TsGqlSubscription` (or `Js*` variants) → `GraphQLQuery/Mutation/Subscription` field
-
-**Example:** Client query "GetUsers" selecting field "users" → links to schema's `Query.users` field
-
-### 3. Schema → Backend (CALL Links)
-
-**Implementation:** `_link_schema_to_backend()` in `graphql_application_level.py`
-
-**Matching logic:**
-1. Find all Java classes with `@Controller` annotation (JV_CLASS objects from JEE Analyzer)
-2. Find methods with `@QueryMapping`, `@MutationMapping`, or `@SubscriptionMapping` annotations
-3. Match method name to GraphQL field name
-4. Verify annotation type matches operation type (QueryMapping → Query type, etc.)
-5. Create CALL link: `GraphQLQuery/Mutation/Subscription` field → `JV_METHOD`
-
-**Example:** Schema field `Query.users` → links to Java method `users()` with `@QueryMapping` in a `@Controller` class
-
-**Note:** Currently uses naive name-based matching. See [Backend-to-Schema Linking](#backend-to-schema-linking-future-enhancement) section for planned improvements.
+Anything still unresolved when the analysis ends becomes an explicit placeholder object
+(`TsGqlUnresolvedDefinition`, `JsGqlUnresolvedDefinition`, `UnresolvedSchemaField`,
+`TsUnresolvedNodeJsResolver`, `JsUnresolvedNodeJsResolver`, `TsUnresolvedServiceMethod`,
+`JsUnresolvedServiceMethod`) instead of being dropped. Missing links stay visible in Imaging
+rather than silently disappearing.
 
 ---
 
-## Deployment
+## Properties stored on objects
 
-### Prerequisites
+| Category | Properties |
+|---|---|
+| `GraphQL_Client_Definition` | `operationName`, `rawQueryText`, `variables`, `fieldsSelected`, `exported` |
+| `GraphQL_Hook_Request` | `hookType`, `fetchPolicy`, `errorPolicy` |
+| `GraphQL_NodeJs_Resolver` | `operationType`, `fieldName`, `serviceFilePath`, `serviceMethod` |
 
-- CAST AIP 8.3 or higher
-- CAST Imaging console access
+---
 
-### Installation Steps
+## Known limitations
 
-1. **Generate the .nupkg package** by double-clicking:
+- **`typeDefs` in TypeScript** is not detected (the JavaScript equivalent is). The metamodel type
+  `TsNodeJsApolloSchema` exists but has no producer yet; an implementation plan is in
+  `CLAUDE-typedefs-implementation-plan.md`.
+- **`useQuery(useMemo(() => gql\`…\`, [dep]))`** — a `useMemo` passed *directly* as the hook
+  argument produces no call-site object (it is deliberately skipped rather than producing a
+  wrong one). Assigning the `useMemo` to a constant first works.
+- **Star imports** (`import * as Queries from './queries'`) fall back to global resolution.
+- **Client → schema matching is name-based.** An operation whose name does not match the schema
+  field it selects (aliases) relies on `fieldsSelected` and can be missed.
+- **No transaction configuration.** `configuration/TCC/Base_GraphQL.TCCSetup` is an empty
+  placeholder — no free definition, no entry point is declared by this extension.
+- **Icons are incomplete.** Only the SDL schema object types have an icon; the Apollo call-site
+  and `gql` definition types render with the default icon in Imaging.
+- **Other GraphQL clients** (Relay, URQL, graphql-request) and other backends are not supported.
+
+---
+
+## Verification status
+
+| Item | State |
+|---|---|
+| Metamodel integrity (68 types, rid/INF_TYPE uniqueness, XML validity) | ✅ verified 2026-09-02 |
+| Object types created by the code vs. metamodel | ✅ consistent |
+| Python compatibility of the extension code | ✅ compiles from 3.4 to 3.12 |
+| End-to-end scan producing objects and links in a KB | ✅ May 2026, AIP Core 8.3.x |
+| End-to-end scan on **CAST Imaging v3** | ❌ **not done** |
+| Unit tests (`tests/`) | ⚠️ require the `cast` module — runnable only inside a CAST installation |
+
+The bundled TypeScript parser under `typescript_dependencies/` ships native binaries built
+against **`python34.dll`**. They are optional (there is a pure-Python fallback), but on any
+platform whose embedded Python is not 3.4 the analysis falls back to the slower path.
+See [PROVENANCE.md](PROVENANCE.md).
+
+---
+
+## Installation
+
+> Validated on AIP Core 8.3.x / AIP Console standalone. **To be re-validated on CAST Imaging v3** —
+> the extension folder and the scan workflow changed between versions.
+
+1. Build the package (requires `nuget.exe` on the `PATH`):
    ```
    plugin-to-nupkg.bat
    ```
-
-2. **Move the .nupkg file** to the extensions folder:
+2. Copy the resulting `.nupkg` to the console's shared extensions folder, e.g.
    ```
    C:\Cast\ProgramData\CAST\AIP-Console-Standalone\data\shared\extensions\
    ```
-
-3. **Launch a Fast Scan** on your application in CAST Console.
-
-4. **Install the extension** (after Fast Scan completes):
-   - Go to the **Extensions** tab (left sidebar)
-   - Click on the **Available** tab
-   - Add your generated extension
-   - CAST will prompt you to reinstall extensions → **Click to reinstall**
-   - Wait for installation to complete
-
-5. **Launch Deep Scan**.
-
-6. **Create Analysis Unit** (since extension has no discoverer):
-   - Wait until the **Run** step of the Deep Scan begins
-   - **STOP** the scan (red button)
-   - Go to **Config** tab (gear icon, left sidebar)
-   - Click on **Universal Analyzer**
-   - Click **+Add**
-   - **Name**: e.g., `GraphQLAnalysisUnit`
-   - **Package** dropdown: Select `main_sources`
-   - **Language**: Enter your extension name (e.g., `GraphQL`)
-   - Click **Save**
-
-7. **Configure entry point for transactions** (to make transactions visible in Imaging):
-   - After creating the Analysis Unit, go to the **Transactions** tab (left sidebar)
-   - This opens a window with three tabs; select **Rules**
-   - Click the **+ADD** button
-   - Name the rule (e.g., `ReactJS Entry Point`)
-   - Activate the toggle **Activation**
-   - Click **UPDATE**
-   - Click on the square object for your new entry point (e.g., `ReactJS Entry Point`)
-   - This opens a page on the right to configure the entry point
-   - Click the large **+** button, then the small **+** button
-   - In the dropdown, select **Property - Identification**
-   - Set **Property** to `type`, **Operator** to `=`, and **Values** to `ReactJS Function Component`
-   - Click **Check Content** to view objects with this property
-   - Click **Save** at the top right of the main page
-   - Your entry point is now configured
-
-8. **Resume the analysis** (blue button, bottom right of **Overview**).
-
-### Verification
-
-After analysis completes, verify the extension worked:
-- Check Analysis logs for `[GraphQL] Starting GraphQL analysis`
-- Review the Analysis Summary for detected objects and links
+3. Run a Fast Scan on the application.
+4. Enable the extension for the application, then run a full analysis.
+5. Check the analysis log for lines prefixed `[GraphQL]`, `[GraphQL][TS]`, `[GraphQL][JS]` and
+   `[GraphQL Application]` — each stage reports how many objects and links it created.
 
 ---
 
-**GraphQL schema objects generated by CAST Extension Generator**  
-For questions or issues, refer to the generator documentation.
+## Repository layout
+
+| Path | Role |
+|---|---|
+| `graphql_analyser_level.py` | UA extension for `.graphql` / `.gql` / `.graphqls` files |
+| `graphql_module.py` | SDL parser and schema object builder |
+| `graphql_typescript_analyzer.py` | TypeScript call sites, `gql` definitions, TS resolvers |
+| `graphql_javascript_analyzer.py` | JavaScript call sites and `gql` definitions |
+| `graphql_nodejs_analyzer.py` | Apollo Server detection in JavaScript (`typeDefs`, resolvers) |
+| `graphql_application_level.py` | Cross-level linking: client → schema → Java / resolver → service |
+| `ts_parser/` | AST walker and result model for the TypeScript side |
+| `typescript_dependencies/` | Bundled copy of CAST's TypeScript parser — see [PROVENANCE.md](PROVENANCE.md) |
+| `configuration/Languages/GraphQL/` | Metamodel, language pattern, Enlighten icons |
+| `res/` | Imaging icons (SVG) |
+| `configuration/TCC/` | Transaction configuration (currently empty) |
+| `tests/` | Unit tests (require a CAST installation) |
 
 ---
 
-## Release Notes
+## Release notes
 
-### Version 1.0.0 (2026-01-23)
+### 1.3.x — March to May 2026
+- Node.js resolver detection (TypeScript and JavaScript) with resolver → service method linking
+- Unresolved placeholder objects for resolvers, service methods and schema fields
+- Source bookmark fixes on all created objects
+
+### 1.2.x — February to March 2026
+- **TypeScript support added**, using CAST's bundled TypeScript parser
+- `gql` definitions: outline, inline, `: TypedDocumentNode<…>`, `as TypedDocumentNode<…>`,
+  `useMemo(() => gql\`…\`)`
+- Codegen-generated hooks (`useGetUserQuery`, …)
+- Imperative Apollo Client calls (`client.query` / `mutate` / `subscribe`)
+- Angular services (`this.apollo.query` / `mutate` / `watchQuery`)
+- Separate object types for JavaScript (`Js…`) and TypeScript (`Ts…`)
+- Import-aware cross-file resolution between a call site and its `gql` constant
+- Alias-aware `gql` tag detection
+
+### 1.0.0 — 22 January 2026
+- Initial release: JavaScript Apollo Client → GraphQL schema → Java Spring, with full-stack
+  transaction analysis
+
 ---
-- Initial release supporting JS Apollo and Java Spring integration through GraphQL with full-stack transaction analysis
 
+## License
+
+LGPL v3 — see [licenses/COPYING.LESSER.txt](licenses/COPYING.LESSER.txt).
+Note that `typescript_dependencies/` contains CAST-authored code redistributed inside this
+repository; see [PROVENANCE.md](PROVENANCE.md) for its origin and licensing status.
