@@ -336,7 +336,7 @@ After all three waves are implemented and a fresh scan of `BigAppTest7` is compl
 Claude should run the following queries against Neo4j (no user involvement needed for
 verification — only for triggering the scan).
 
-> **Neo4j access:** `curl -s -u <user>:<password> <imaging-endpoint> -H "Content-Type: application/json" -X POST -d '{"statements":[{"statement":"<CYPHER>"}]}'`
+> **Neo4j access:** `curl -s -u <user>:<password> <imaging-endpoint> -H "Content-Type: application/json" -X POST -d '{"statements":[{"statement":"<CYPHER>"}]}'` — endpoint and credentials in CLAUDE.md (not versioned).
 
 ### Test 1 — Schema objects exist
 ```cypher
