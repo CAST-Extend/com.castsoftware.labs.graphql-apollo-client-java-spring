@@ -2894,5 +2894,161 @@ const resolvers = {
         print('=' * 70)
 
 
+    def test_typed_document_node_object_literal_in_generics_16(self):
+        """
+        MODULE 16 — Bug 10 regression guard.
+
+        TypedDocumentNode generic parameters that contain TS object type literals
+        with `;` member separators break the bundled parser's `is_generics()`
+        heuristic — it bails on the first `;` it encounters, treating `<`/`>` as
+        binary operators.  The const's subtree fragments apart and neither the
+        main extraction loop nor the Bug 3 `as-cast` fallback can find the
+        gql template.
+
+        The fragment-level recovery fallback (`_recover_orphaned_gql_templates`)
+        must rescue the GQL definition in this case.
+
+        Real-world pattern (Apollo + TS codegen output):
+            const X: TypedDocumentNode<
+              { result: Foo },
+              { id: string; reportedAt?: string }   ← the `;` is the trigger
+            > = gql`...`
+        """
+        module = SourceFile('module.ts', text="""\
+import React from 'react';
+import { gql, useQuery, useMutation } from '@apollo/client';
+import { TypedDocumentNode } from '@graphql-typed-document-node/core';
+
+interface Card {
+  id: string;
+  status: string;
+  reportedLostAt: string | null;
+  replacementCardId: string | null;
+}
+
+interface GetCardsData { cards: Card[] }
+interface GetCardsVars {}
+
+// ─── Trigger case: `;` inside the SECOND generic param → is_generics() fails ──
+export const REPORT_LOST_CARD: TypedDocumentNode<
+  { reportLostCard: Card },
+  { id: string; reportedAt?: string; lastSeenLocation?: string; requestReplacement?: boolean }
+> = gql`
+  mutation ReportLostCard($id: ID!, $reportedAt: DateTime, $lastSeenLocation: String, $requestReplacement: Boolean) {
+    reportLostCard(id: $id, reportedAt: $reportedAt, lastSeenLocation: $lastSeenLocation, requestReplacement: $requestReplacement) {
+      id
+      status
+      reportedLostAt
+      replacementCardId
+    }
+  }
+`;
+
+// ─── Second trigger case: `;` inside the FIRST generic param ──────────────────
+export const GET_CARD: TypedDocumentNode<
+  { getCard: { id: string; status: string } },
+  { id: string }
+> = gql`
+  query GetCard($id: ID!) {
+    getCard(id: $id) {
+      id
+      status
+    }
+  }
+`;
+
+// ─── Control case (no `;` inside generics): the main loop already handles it.
+// Included to verify we don't regress on the working path.
+export const GET_CARDS: TypedDocumentNode<GetCardsData, GetCardsVars> = gql`
+  query GetCards {
+    cards {
+      id
+      status
+    }
+  }
+`;
+
+// ─── Hook using the recovered definition ──────────────────────────────────────
+const CardComponent: React.FC = () => {
+  const [reportLost, { data }] = useMutation(REPORT_LOST_CARD);
+  const { data: cardData } = useQuery(GET_CARD, { variables: { id: '1' } });
+  const { data: allCards } = useQuery(GET_CARDS);
+  return null;
+};
+
+export default CardComponent;
+""")
+        apollo_analysis_results = analyse(module)
+        ast = module.get_ast()
+        if ast:
+            ast.print_tree()
+
+        gql_defs = apollo_analysis_results.gql_definitions_by_file[module.get_path()]
+
+        gql_names = sorted(d.name for d in gql_defs)
+        print('\n[Bug 10 test] gql_defs found: {}'.format(gql_names))
+
+        # ── Assertion 1: the trigger case (REPORT_LOST_CARD) is recovered ──
+        report_defs = [d for d in gql_defs if d.name == 'REPORT_LOST_CARD']
+        self.assertEqual(
+            len(report_defs), 1,
+            "REPORT_LOST_CARD has `;` inside its 2nd generic type literal — "
+            "must be recovered by the fragment-level fallback. "
+            "Got gql_defs: {}".format(gql_names))
+        self.assertEqual(report_defs[0].operation_name, 'ReportLostCard')
+        self.assertEqual(report_defs[0].operation_type, 'mutation')
+        self.assertIn('reportLostCard', report_defs[0].fields_selected)
+        self.assertIn('$id', report_defs[0].variables)
+
+        # ── Assertion 2: second trigger case (GET_CARD) is also recovered ──
+        get_card_defs = [d for d in gql_defs if d.name == 'GET_CARD']
+        self.assertEqual(
+            len(get_card_defs), 1,
+            "GET_CARD has `;` inside its 1st generic type literal — "
+            "must be recovered by the fragment-level fallback. "
+            "Got gql_defs: {}".format(gql_names))
+        self.assertEqual(get_card_defs[0].operation_name, 'GetCard')
+        self.assertEqual(get_card_defs[0].operation_type, 'query')
+
+        # ── Assertion 3: regression guard — the working path still works ──
+        cards_defs = [d for d in gql_defs if d.name == 'GET_CARDS']
+        self.assertEqual(
+            len(cards_defs), 1,
+            "GET_CARDS uses identifier-only generics (the working path); "
+            "the new fallback must NOT break it. Got gql_defs: {}".format(gql_names))
+        self.assertEqual(cards_defs[0].operation_name, 'GetCards')
+
+        # ── Assertion 4: hooks resolve to the recovered definitions ───────
+        hooks = apollo_analysis_results.apollo_hooks_by_file[module.get_path()]
+
+        mutation_hooks = [h for h in hooks
+                          if h.hook_name == 'useMutation'
+                          and h.operation_name == 'REPORT_LOST_CARD']
+        self.assertEqual(
+            len(mutation_hooks), 1,
+            "useMutation(REPORT_LOST_CARD) must be detected and linkable")
+
+        query_hooks_card = [h for h in hooks
+                            if h.hook_name == 'useQuery'
+                            and h.operation_name == 'GET_CARD']
+        self.assertEqual(
+            len(query_hooks_card), 1,
+            "useQuery(GET_CARD) must be detected and linkable")
+
+        query_hooks_cards = [h for h in hooks
+                             if h.hook_name == 'useQuery'
+                             and h.operation_name == 'GET_CARDS']
+        self.assertEqual(
+            len(query_hooks_cards), 1,
+            "useQuery(GET_CARDS) — regression guard for working path")
+
+        # ── Assertion 5: no duplicates ────────────────────────────────────
+        self.assertEqual(
+            len(gql_defs), 3,
+            "Exactly 3 GQL definitions expected (REPORT_LOST_CARD, GET_CARD, GET_CARDS); "
+            "more would mean the fallback double-processed something. "
+            "Got gql_defs: {}".format(gql_names))
+
+
 if __name__ == "__main__":
     unittest.main()

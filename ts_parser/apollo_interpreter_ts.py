@@ -443,6 +443,11 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
             # Find all variable declarations
             var_declarations = get_descendants(ast, 'VariableDeclaration')
 
+            # Bug 10: track every StringTemplate already claimed by a successful
+            # registration (main loop + Bug 3 fallback).  Used by the fragment-level
+            # recovery fallback below to avoid double-processing.
+            processed_template_ids = set()
+
             for var_decl in var_declarations:
                 # First try: setup only — if var_name/expr_statements fail, skip this var_decl
                 try:
@@ -574,6 +579,7 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                                 _glog('RESULT', 'GqlDef', _c, 'registered {} → {}'.format(
                                     effective_var_name, graphql_metadata['operationName']))
                                 processed_names.add(effective_var_name)
+                                processed_template_ids.add(id(string_template))
                                 definition_found = True
                                 # No break — keep iterating to handle merged VarDecl case where
                                 # multiple `const X = gql\`...\` as Type` declarations without
@@ -615,7 +621,23 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
                                 var_name, var_decl, string_templates_in_decl[0], _c,
                                 exported=_is_var_exported(var_decl)
                             )
-                    
+                            processed_template_ids.add(id(string_templates_in_decl[0]))
+
+            # ─── Bug 10 fallback: broken AST recovery ──────────────────────────
+            # When TypeScript object type literals with `;` member separators appear
+            # inside generic parameters (e.g. `TypedDocumentNode<{a: string; b: number}>`),
+            # the bundled parser's `is_generics()` heuristic bails out on the `;` and
+            # treats `<` / `>` as binary operators.  This breaks the VariableDeclaration
+            # subtree so badly that the `gql\`...\`` template ends up outside the
+            # VarDecl entirely — neither the main loop nor the Bug 3 fallback can find it.
+            #
+            # Recovery strategy: at fragment level, scan all StringTemplates that no
+            # earlier path has claimed.  For each gql-tagged orphan template, find the
+            # nearest preceding "lonely" VariableDeclaration (one that has a name but
+            # no associated GQL definition yet) by source line proximity, and register
+            # the GQL definition with that variable name.
+            self._recover_orphaned_gql_templates(ast, var_declarations, processed_template_ids)
+
         except Exception as e:
             log.warning('[GraphQL][TS] extract_all_gql_definitions error: {}'.format(str(e)))
 
@@ -754,6 +776,143 @@ class ApolloBasicInterpreterTS(BaseFrameworkInterpreter):
         _glog('DECISION', 'GqlDef', _c, 'op={} name={}'.format(
             graphql_metadata.get('operationType', '?'), graphql_metadata['operationName']))
         _glog('RESULT', 'GqlDef', _c, 'registered {} → {}'.format(var_name, graphql_metadata['operationName']))
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Bug 10 — Fragment-level recovery for broken AST
+    # ──────────────────────────────────────────────────────────────────────────
+    # Root cause: the bundled TS parser's `is_generics()` heuristic abandons
+    # whenever it sees a `;` while scanning for the closing `>` of a generic
+    # parameter list.  TypeScript object type literals legitimately use `;` as
+    # a member separator (`{ id: string; foo?: number }`), so any generic that
+    # contains such a literal causes `<` and `>` to be parsed as binary operators
+    # — and the entire `const X: T<...> = gql\`...\`` subtree fragments apart.
+    #
+    # The two recovery helpers below fish out the orphan StringTemplate and
+    # re-associate it with the original variable name by source-line proximity.
+
+    def _is_gql_tagged_template(self, string_template):
+        """
+        Return True if *string_template* is preceded by a gql tag identifier in
+        any of its ancestor nodes' children lists (up to 4 levels).  Used by the
+        fragment-level recovery fallback when the parser breaks the VarDecl tree.
+
+        Walks back through up to 6 preceding siblings at each level, skipping
+        whitespace, and accepts either an Identifier node whose get_name() is a
+        known gql alias, or a bare Token whose text/repr contains the gql tag.
+        Returns False on the first non-whitespace, non-gql token at any level.
+        """
+        node = string_template
+        for _ in range(4):
+            parent = getattr(node, 'parent', None)
+            if parent is None:
+                break
+            children = getattr(parent, 'children', None)
+            if children:
+                try:
+                    idx = children.index(node)
+                except ValueError:
+                    idx = -1
+                if idx > 0:
+                    for k in range(idx - 1, max(idx - 7, -1), -1):
+                        prev = children[k]
+                        prev_text = getattr(prev, 'text', '')
+                        # Skip pure-whitespace tokens
+                        if not prev_text or not prev_text.strip():
+                            continue
+                        # Identifier-node check
+                        if hasattr(prev, 'get_name'):
+                            try:
+                                pname = prev.get_name()
+                                if pname in self.gql_tag_names:
+                                    return True
+                            except Exception:
+                                pass
+                        # Bare token text check
+                        if prev_text in self.gql_tag_names:
+                            return True
+                        # Repr-based token check (covers Token.Generic representations)
+                        try:
+                            if self._has_gql_tag_token(str(prev)):
+                                return True
+                        except Exception:
+                            pass
+                        # First non-whitespace token at this level is not gql → stop here
+                        break
+            node = parent
+        return False
+
+    def _recover_orphaned_gql_templates(self, ast, var_declarations, processed_template_ids):
+        """
+        Final-stage fallback: scan every StringTemplate in the fragment, filter
+        to gql-tagged orphans (not already processed by the main loop or Bug 3
+        fallback), and pair each one with the nearest preceding VariableDeclaration
+        that still has no associated GQL definition.
+
+        Why line proximity is safe here:
+        - Broken VarDecls still report the correct start line (where `const` sits).
+        - The orphan StringTemplate is always on a later line within the same
+          original declaration (a few lines after the `=`).
+        - We never reassign a template that was already claimed, and we mark a
+          var_name as "taken" as soon as we register it, so two consecutive
+          broken declarations cannot swap their templates.
+        """
+        try:
+            all_templates = get_descendants(ast, 'StringTemplate')
+            if not all_templates:
+                return
+
+            file_path = self.module.get_path()
+            already_named = set(
+                gd.name for gd in
+                self.apollo_analysis_results.gql_definitions_by_file.get(file_path, [])
+            )
+
+            for var_decl in var_declarations:
+                try:
+                    var_name = var_decl.get_name()
+                except Exception:
+                    continue
+                if var_name is None or var_name in already_named:
+                    continue
+
+                vd_line = (var_decl.get_begin_line()
+                           if hasattr(var_decl, 'get_begin_line') else None)
+                if vd_line is None:
+                    continue
+
+                best_template = None
+                best_distance = None
+                for st in all_templates:
+                    if id(st) in processed_template_ids:
+                        continue
+                    st_line = (st.get_begin_line()
+                               if hasattr(st, 'get_begin_line') else None)
+                    if st_line is None or st_line < vd_line:
+                        continue
+                    if not self._is_gql_tagged_template(st):
+                        continue
+                    distance = st_line - vd_line
+                    if best_distance is None or distance < best_distance:
+                        best_distance = distance
+                        best_template = st
+
+                # Sanity bound: only accept matches within ~30 lines of the const
+                # declaration — beyond that we are almost certainly guessing wrong.
+                if best_template is None or best_distance > 30:
+                    continue
+
+                _c = _ctx()
+                _glog('DETECT', 'GqlDef', _c,
+                      'orphan recovery (broken AST): var={} const_line={} template_line={}'.format(
+                          var_name, vd_line, best_template.get_begin_line()))
+                self._register_gql_from_template(
+                    var_name, var_decl, best_template, _c,
+                    exported=_is_var_exported(var_decl)
+                )
+                processed_template_ids.add(id(best_template))
+                already_named.add(var_name)
+        except Exception as e:
+            log.warning('[GraphQL][TS] _recover_orphaned_gql_templates error: {}'.format(str(e)))
 
     def extract_all_apollo_hooks(self):
         """
