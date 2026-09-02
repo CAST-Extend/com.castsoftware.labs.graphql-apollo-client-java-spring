@@ -27,31 +27,22 @@ logs_scan/
 # typescript_dependencies/typescript_parser/light_parser/__init__.py
 __init__.py
 
-# ─── AI assistant working documents (local only) ──────────────────────────────
+# ─── Local-only working documents ─────────────────────────────────────────────
+# CLAUDE.md: developer/agent guide. EXTENSION_SDK_DEV_REQUIREMENTS.md: internal CAST SDK doc,
+# deliberately kept out of this public repository.
 CLAUDE.md
-MEMORY.md
-AI_CONTEXT.md
-COPILOT_INSTRUCTIONS.md
+EXTENSION_SDK_DEV_REQUIREMENTS.md
 
 # ─── Generated test applications (too large to version) ───────────────────────
 big_app_test/
 small_app_test/
 ressources/
-SMALL_APP_TEST_GENERATION_PROMPT.md
-SMALL_APP_TEST_PART2.md
-SMALL_APP_TEST_PART3.md
-SMALL_APP_TEST_PART4.md
-SMALL_APP_TEST_PART5.md
-SMALL_APP_TEST_PART6.md
-SMALL_APP_TEST_PART7.md
-
-# ─── Local architecture notes (superseded by README.md) ───────────────────────
-docs/
 
 # ─── Guard: personal / unrelated files must never land in this repo ───────────
 # (job-search artefacts from an unrelated tool ended up here once; moved to
 #  ../_perso/ on 2026-09-02 — these patterns stop it happening again)
 _perso/
+_archive_prompts/
 .playwright-mcp/
 job*
 jobs*
