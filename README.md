@@ -243,6 +243,7 @@ See [PROVENANCE.md](PROVENANCE.md).
 | `res/` | Imaging icons (SVG) |
 | `configuration/TCC/` | Transaction configuration (currently empty) |
 | `tests/` | Unit tests (require a CAST installation) |
+| `cast_graphql_extension_kb_architecture.html` | Visual map of every KB object type and link — open it in a browser |
 
 ---
 
